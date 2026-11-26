@@ -44,4 +44,4 @@ if ($PushOfflineMaps) {
 }
 
 & $adb -s $target shell "am start -n com.kc97.carlauncher/.MainActivity"
-Write-Host "Installed & launched KC97 Cockpit v1.9 on $target!"
+Write-Host "Installed & launched KC97 Cockpit v2.0 on $target!"

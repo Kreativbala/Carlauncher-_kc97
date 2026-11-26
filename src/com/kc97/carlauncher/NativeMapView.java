@@ -26,6 +26,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -64,9 +65,44 @@ public class NativeMapView extends View {
     private final Paint markerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint markerFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint markerStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint routeGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint routeLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint destFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint camBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint camRingPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint camTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path arrowPath = new Path();
+    private final Path routePath = new Path();
     private final Rect srcRect = new Rect();
     private final RectF dstRect = new RectF();
+
+    public interface OnMapLongPressListener {
+        void onMapLongPress(double lat, double lon);
+    }
+
+    private volatile List<double[]> routePoints = Collections.emptyList();
+    private volatile List<SpeedCameraManager.SpeedCamera> cameras = Collections.emptyList();
+    private OnMapLongPressListener longPressListener;
+    private float downTouchX, downTouchY;
+    private boolean movedSinceDown = false;
+    private boolean longPressFired = false;
+    private final Runnable longPressTask = new Runnable() {
+        @Override
+        public void run() {
+            if (dragging && !movedSinceDown && longPressListener != null) {
+                longPressFired = true;
+                int w = getWidth();
+                int h = getHeight();
+                if (w > 0 && h > 0) {
+                    double[] cPx = latLonToPixel(centerLat, centerLon, zoom);
+                    double px = (cPx[0] - w * 0.5) + downTouchX;
+                    double py = (cPx[1] - h * 0.5) + downTouchY;
+                    double[] ll = pixelToLatLon(px, py, zoom);
+                    longPressListener.onMapLongPress(ll[0], ll[1]);
+                }
+            }
+        }
+    };
 
     private final File diskCacheDir;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -144,7 +180,52 @@ public class NativeMapView extends View {
         markerStrokePaint.setColor(Color.WHITE);
         markerStrokePaint.setStrokeJoin(Paint.Join.ROUND);
 
+        routeGlowPaint.setStyle(Paint.Style.STROKE);
+        routeGlowPaint.setStrokeWidth(14f);
+        routeGlowPaint.setStrokeCap(Paint.Cap.ROUND);
+        routeGlowPaint.setStrokeJoin(Paint.Join.ROUND);
+        routeGlowPaint.setColor(Color.argb(95, 0, 212, 255));
+
+        routeLinePaint.setStyle(Paint.Style.STROKE);
+        routeLinePaint.setStrokeWidth(6.5f);
+        routeLinePaint.setStrokeCap(Paint.Cap.ROUND);
+        routeLinePaint.setStrokeJoin(Paint.Join.ROUND);
+        routeLinePaint.setColor(Color.parseColor("#38BDF8"));
+
+        destFillPaint.setStyle(Paint.Style.FILL);
+        destFillPaint.setColor(Color.parseColor("#EF4444"));
+
+        camBgPaint.setStyle(Paint.Style.FILL);
+        camBgPaint.setColor(Color.parseColor("#F8FAFC"));
+
+        camRingPaint.setStyle(Paint.Style.STROKE);
+        camRingPaint.setStrokeWidth(3.5f);
+        camRingPaint.setColor(Color.parseColor("#EF4444"));
+
+        camTextPaint.setColor(Color.parseColor("#0F172A"));
+        camTextPaint.setTextSize(15f);
+        camTextPaint.setFakeBoldText(true);
+        camTextPaint.setTextAlign(Paint.Align.CENTER);
+
         mainHandler.postDelayed(trafficRefreshTask, 120_000L);
+    }
+
+    public double getCarLat() { return carLat; }
+    public double getCarLon() { return carLon; }
+    public float getCarBearing() { return carBearing; }
+
+    public void setOnMapLongPressListener(OnMapLongPressListener l) {
+        this.longPressListener = l;
+    }
+
+    public void setRoutePoints(List<double[]> pts) {
+        this.routePoints = pts != null ? pts : Collections.emptyList();
+        invalidate();
+    }
+
+    public void setCameras(List<SpeedCameraManager.SpeedCamera> cams) {
+        this.cameras = cams != null ? cams : Collections.emptyList();
+        invalidate();
     }
 
     public void setNightDimMode(boolean night) {
@@ -214,29 +295,44 @@ public class NativeMapView extends View {
     public boolean onTouchEvent(MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
-                lastTouchX = event.getX();
-                lastTouchY = event.getY();
+                downTouchX = event.getX();
+                downTouchY = event.getY();
+                lastTouchX = downTouchX;
+                lastTouchY = downTouchY;
                 dragging = true;
-                followCar = false;
+                movedSinceDown = false;
+                longPressFired = false;
                 mainHandler.removeCallbacks(autoRecenterTask);
+                mainHandler.removeCallbacks(longPressTask);
+                mainHandler.postDelayed(longPressTask, 650L);
                 return true;
             case MotionEvent.ACTION_MOVE:
                 if (dragging) {
                     float dx = event.getX() - lastTouchX;
                     float dy = event.getY() - lastTouchY;
-                    lastTouchX = event.getX();
-                    lastTouchY = event.getY();
-                    double[] cPx = latLonToPixel(centerLat, centerLon, zoom);
-                    double[] nl = pixelToLatLon(cPx[0] - dx, cPx[1] - dy, zoom);
-                    centerLat = nl[0];
-                    centerLon = nl[1];
-                    invalidate();
+                    if (!movedSinceDown && Math.hypot(event.getX() - downTouchX, event.getY() - downTouchY) > 14f) {
+                        movedSinceDown = true;
+                        followCar = false;
+                        mainHandler.removeCallbacks(longPressTask);
+                    }
+                    if (movedSinceDown && !longPressFired) {
+                        lastTouchX = event.getX();
+                        lastTouchY = event.getY();
+                        double[] cPx = latLonToPixel(centerLat, centerLon, zoom);
+                        double[] nl = pixelToLatLon(cPx[0] - dx, cPx[1] - dy, zoom);
+                        centerLat = nl[0];
+                        centerLon = nl[1];
+                        invalidate();
+                    }
                 }
                 return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 dragging = false;
-                mainHandler.postDelayed(autoRecenterTask, 15_000L);
+                mainHandler.removeCallbacks(longPressTask);
+                if (movedSinceDown) {
+                    mainHandler.postDelayed(autoRecenterTask, 15_000L);
+                }
                 return true;
         }
         return super.onTouchEvent(event);
@@ -308,6 +404,52 @@ public class NativeMapView extends View {
                                         wtx, ty, zoom, trafficEpochSec));
                     }
                 }
+            }
+        }
+
+        // 2.5 Draw active route polyline + Point B destination marker
+        List<double[]> rPts = routePoints;
+        if (rPts != null && rPts.size() >= 2) {
+            routePath.reset();
+            boolean started = false;
+            float endX = 0f, endY = 0f;
+            for (int i = 0; i < rPts.size(); i++) {
+                double[] p = rPts.get(i);
+                double[] pPx = latLonToPixel(p[0], p[1], zoom);
+                float sx = (float) (pPx[0] - offsetX);
+                float sy = (float) (pPx[1] - offsetY);
+                if (!started) {
+                    routePath.moveTo(sx, sy);
+                    started = true;
+                } else {
+                    routePath.lineTo(sx, sy);
+                }
+                endX = sx;
+                endY = sy;
+            }
+            canvas.drawPath(routePath, routeGlowPaint);
+            canvas.drawPath(routePath, routeLinePaint);
+            if (endX > -40 && endX < w + 40 && endY > -40 && endY < h + 40) {
+                canvas.drawCircle(endX, endY, 15f, destFillPaint);
+                canvas.drawCircle(endX, endY, 15f, markerStrokePaint);
+                camTextPaint.setColor(Color.WHITE);
+                canvas.drawText("B", endX, endY + 5f, camTextPaint);
+                camTextPaint.setColor(Color.parseColor("#0F172A"));
+            }
+        }
+
+        // 2.7 Draw nearby Safe City speed cameras on map (visible at zoom >= 11)
+        List<SpeedCameraManager.SpeedCamera> cams = cameras;
+        if (zoom >= 11 && cams != null && !cams.isEmpty()) {
+            for (int i = 0; i < cams.size(); i++) {
+                SpeedCameraManager.SpeedCamera c = cams.get(i);
+                double[] cPx = latLonToPixel(c.lat, c.lon, zoom);
+                float cx = (float) (cPx[0] - offsetX);
+                float cy = (float) (cPx[1] - offsetY);
+                if (cx < -24 || cx > w + 24 || cy < -24 || cy > h + 24) continue;
+                canvas.drawCircle(cx, cy, 15f, camBgPaint);
+                canvas.drawCircle(cx, cy, 15f, camRingPaint);
+                canvas.drawText(String.valueOf(c.speedLimit), cx, cy + 5.5f, camTextPaint);
             }
         }
 

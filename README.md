@@ -5,9 +5,9 @@
 **Ultra-lightweight dark automotive launcher for Android head units (KTE / KC97 / MT6797 / Android 8.0+)**  
 *Native Canvas Map & Live Traffic (0 MB WebView) • Direct Blue ELM327 v1.5 OBD-II Fuel Computer (`goc_spp`) • Auto-Night Headlights • 3-Tab Media Widget*
 
-[![Version](https://img.shields.io/badge/version-1.9-00D4FF?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0-00D4FF?style=for-the-badge)](CHANGELOG.md)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20(API%2026)-34D399?style=for-the-badge)](#requirements--build-from-source)
-[![APK Size](https://img.shields.io/badge/APK%20size-~58%20KB-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
+[![APK Size](https://img.shields.io/badge/APK%20size-~82%20KB-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
 [![RAM Usage](https://img.shields.io/badge/RAM-~30%20MB%20(0%20WebViews)-8B5CF6?style=for-the-badge)](docs/ARCHITECTURE.en.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-94A3B8?style=for-the-badge)](LICENSE)
 
@@ -32,7 +32,23 @@ Many aftermarket Chinese Android head units (e.g., **KC97 / KTE / Helio X20 MT67
 
 ---
 
-## Key Features (v1.9)
+## Key Features (v2.0)
+
+### 0. New in v2.0 — Autonomous Routing, Safe City Cameras & Telemetry Black Box
+- **Point B Routing on Main Map (`🏁 Маршрут`):**
+  - Search addresses, pick saved **🏠 Home / 💼 Work**, choose built-in **offline Chuy & Issyk-Kul cities**, or **long-press anywhere on the map** to set Point B.
+  - Draws a glowing neon route polyline + live remaining `km` and `ETA` directly on the native dark map, with 1-tap handoff to **Yandex Navigator** (`yandexnavi://build_route_on_map`).
+  - **Boom Gorge Offline Resilience:** Active OSRM routes are persisted on disk (`/sdcard/KC97MapCache/active_route.txt`), and if 4G drops completely, an offline Chuy–Boom–Issyk-Kul highway corridor router builds the route anyway.
+- **Safe City Speed Cameras (`📷 Камеры` — Offline + 1-Tap GitHub Sync):**
+  - Bundled offline Kyrgyzstan database (`cameras/speedcam_kg.txt`, standard SpeedCamOnLine/Navitel format) drawn right on the map.
+  - Direction-aware **420 m lookahead** (ignores opposite-lane cameras) with configurable alert margin (default **`+9 km/h`** → warns at `69 km/h` in a `60` zone, before KG's `71 km/h` fine).
+  - Calm visual banner under the limit; bold **red alert + Russian voice / chime with music ducking** when speeding.
+  - **1-tap Update from GitHub** + **1-tap `+ Camera` at current GPS** + drop-in custom `speedcam_custom.txt` support.
+- **On-Device Offline Map Sync (Chuy + Boom Gorge + Issyk-Kul):**
+  - Download missing offline map tiles (including high-detail `z=14` **Boom Gorge**) straight on the head unit over Wi-Fi — no PC required!
+- **Silent Background Trip Telemetry Logger (CSV Black Box):**
+  - Invisibly records 1 Hz CSV telemetry (`lat, lon, GPS/ECU speed, RPM, coolant °C, battery V, fuel rates, headlights, handbrake, CPU °C`) to `/sdcard/KC97Logs/` (auto-cleans after 30 days).
+  - **1-tap Export** in the OBD menu copies logs to `/sdcard/Download/KC97Logs/` and opens the Android Share sheet (Telegram / WhatsApp / Mail / USB).
 
 ### 1. Vehicle Telemetry & OBD-II Fuel Computer
 - **Anti-Drift GPS + ECU Speedometer:**

@@ -1,6 +1,16 @@
 # Changelog / История изменений
 
-## [1.9] — 2026-11-26 (Current Stable / Текущая стабильная)
+## [2.0] — 2026-11-26 (Current Stable / Текущая стабильная)
+- **EN:** Added **Point B Routing** right on the native map (`🏁 Маршрут`: address search, Home/Work favorites, offline Chuy & Issyk-Kul cities, map long-press, OSRM polyline + offline Boom Gorge highway corridor fallback + persistent route across restarts + 1-tap Yandex Navigator handoff).
+- **EN:** Added **Safe City Speed Cameras** (`📷 Камеры`: 135 bundled KG cameras including M-41 Belovodskoe→Bishkek 60 km/h, direction-aware 420m lookahead, configurable `+9 km/h` warning margin, Russian TTS + chime with AudioFocus music ducking, 1-tap GitHub DB sync, 1-tap `+ Camera here`, custom `speedcam_custom.txt` support).
+- **EN:** Added **On-Device Offline Map Sync** (`OfflineMapUpdater`) to top up Chuy + high-detail Boom Gorge (`z=14`) + Issyk-Kul tiles directly over Wi-Fi without a PC.
+- **EN:** Added **Silent Background Trip Telemetry Logger** (`/sdcard/KC97Logs/*.csv`, 30-day retention) with 1-tap CSV export & Android Share in the OBD menu.
+- **RU:** Добавлен **выбор точки «Б» и прокладка маршрута** прямо на главной карте (`🏁 Маршрут`: поиск адреса, Дом/Работа, офлайн-города Чуя и Иссык-Куля, долгое нажатие на карту, сохранение маршрута и офлайн-коридор в Боомском ущелье + передача точки в Я.Навигатор).
+- **RU:** Интегрированы **камеры «Безопасного города»** (`📷 Камеры`: 135 камер по КР + новая камера `42.84782, 74.16440` 60 км/ч в сторону Бишкека, учёт направления за 420 м, порог `+9 км/ч` → предупреждает с 69 км/ч, русский голос + сигнал с приглушением музыки, обновление с GitHub в 1 тап, кнопка «+ Камера здесь»).
+- **RU:** Добавлена **автономная докачка офлайн-карт Чуй + Боом + Иссык-Куль** прямо на магнитоле по Wi-Fi без ПК.
+- **RU:** Добавлен **фоновый «чёрный ящик» логов поездки** (`/sdcard/KC97Logs/*.csv`) с экспортом по кнопке в меню OBD.
+
+## [1.9] — 2026-11-26
 - **EN:** Enlarged coolant & fuel consumption typography (+2sp: coolant `17sp`, instant `18sp`, average `20sp`, trip distance/liters `15sp`) for effortless glance readability while driving.
 - **EN:** Replaced the unused Radio dock button with direct **Dashcam / «Стражи» (`com.fvision.camera`)** launch (long-press still opens Radio `com.kte.radio`).
 - **RU:** Увеличен шрифт блока ОЖ и расхода топлива на +2 пункта (`ОЖ` 17sp, `Тек` 18sp, `Ср` 20sp, пробег/литры 15sp) для удобного чтения на ходу.

@@ -24,6 +24,7 @@ import android.os.BatteryManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.StrictMode;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -34,6 +35,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.WindowManager;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -44,6 +46,7 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity implements LocationListener, CarMediaListenerService.MediaUpdateListener {
@@ -78,9 +81,19 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
 
     // Live Blue ELM327 v1.5 OBD-II Fuel Computer + TCP bridge (127.0.0.1:35000)
     private ObdBridgeManager obdManager;
+    private ObdBridgeManager.ObdData latestObdData;
     private boolean obdEcuReady = false;
     private int obdRpm = 0;
     private int obdEcuSpeedKmh = 0;
+    private boolean lastHeadlampOn = false;
+    private boolean lastHandbrakeOn = false;
+    private int lastCpuTempC = 0;
+
+    // v2.0 Modules: Safe City Speed Cameras, Point B Routing, On-Device Offline Maps, Silent Trip Logger
+    private SpeedCameraManager speedCameraManager;
+    private RouteManager routeManager;
+    private OfflineMapUpdater offlineMapUpdater;
+    private TripLogger tripLogger;
 
     // GPS Trip Computer state
     private double tripDistanceMeters = 0.0;
@@ -91,9 +104,12 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     private Location lastTripLocation = null;
     private int gpsMoveStreak = 0;
 
-    // Pure native Canvas Map (with offline disk cache + auto-night!)
+    // Pure native Canvas Map (with offline disk cache + auto-night + cameras + route!)
     private NativeMapView mapView;
     private TextView tvTrafficPill;
+    private TextView tvCameraPill;
+    private TextView tvCameraBanner;
+    private TextView tvRouteBanner;
     private TextView tvGpsPill;
     private LocationManager locationManager;
     private GnssStatus.Callback gnssCallback;
@@ -217,14 +233,32 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Allow sharing exported CSV trip logs via file:// URI on Android 8 without FileProvider overhead
+        StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder().build());
+
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         selectedMediaTab = prefs.getString(KEY_MEDIA_TAB, TAB_YANDEX);
         tripStartElapsedMs = SystemClock.elapsedRealtime();
 
+        speedCameraManager = new SpeedCameraManager(this);
+        routeManager = new RouteManager(this);
+        offlineMapUpdater = new OfflineMapUpdater(this);
+        tripLogger = new TripLogger(this);
+
         setContentView(buildRootLayout());
         requestPermissionsIfNeeded();
         applyBootSwappinessAsync();
+
+        if (mapView != null) {
+            mapView.setCameras(speedCameraManager.getCameras());
+            RouteManager.ActiveRoute savedRoute = routeManager.getActiveRoute();
+            if (savedRoute != null) {
+                mapView.setRoutePoints(savedRoute.points);
+            }
+            updateRouteBanner();
+            mapView.setOnMapLongPressListener(this::showLongPressPointBDialog);
+        }
 
         String savedMac = prefs.getString("obd_mac", ObdBridgeManager.DEFAULT_OBD_MAC);
         obdManager = new ObdBridgeManager(this, savedMac, this::onObdUpdated);
@@ -497,17 +531,40 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         card.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // Top-left row: Live Traffic toggle + Safe City Cameras & Offline Maps Hub
+        LinearLayout topLeftRow = new LinearLayout(this);
+        topLeftRow.setOrientation(LinearLayout.HORIZONTAL);
+
         tvTrafficPill = makeOverlayPill("● Пробки ВКЛ", "#D60D131D", "#22C55E", "#EAF2FF");
         tvTrafficPill.setOnClickListener(v -> {
             boolean on = mapView.toggleTraffic();
             tvTrafficPill.setText(on ? "● Пробки ВКЛ" : "○ Пробки ВЫКЛ");
             tvTrafficPill.setTextColor(Color.parseColor(on ? "#4ADE80" : "#94A3B8"));
         });
-        FrameLayout.LayoutParams trfLp = new FrameLayout.LayoutParams(
+        LinearLayout.LayoutParams trfBtnLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        trfBtnLp.rightMargin = dp(8);
+        topLeftRow.addView(tvTrafficPill, trfBtnLp);
+
+        int camCnt = speedCameraManager != null ? speedCameraManager.getCameraCount() : 0;
+        tvCameraPill = makeOverlayPill("📷 Камеры (" + camCnt + ")", "#D60D131D", "#38BDF8", "#E0F2FE");
+        tvCameraPill.setOnClickListener(v -> showCamerasAndMapsDialog());
+        topLeftRow.addView(tvCameraPill);
+
+        FrameLayout.LayoutParams topLeftLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-        trfLp.leftMargin = dp(12);
-        trfLp.topMargin = dp(12);
-        card.addView(tvTrafficPill, trfLp);
+        topLeftLp.leftMargin = dp(12);
+        topLeftLp.topMargin = dp(12);
+        card.addView(topLeftRow, topLeftLp);
+
+        // Top-center HUD Camera Alert Banner (hidden until within 420m of a camera!)
+        tvCameraBanner = makeOverlayPill("📷 Камера 60 • 300 м", "#E63B1219", "#EF4444", "#FFFFFF");
+        tvCameraBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        tvCameraBanner.setVisibility(View.GONE);
+        FrameLayout.LayoutParams camBanLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        camBanLp.topMargin = dp(56);
+        card.addView(tvCameraBanner, camBanLp);
 
         tvGpsPill = makeOverlayPill("● Поиск GPS…", "#D60D131D", "#F59E0B", "#FDE68A");
         FrameLayout.LayoutParams gpsLp = new FrameLayout.LayoutParams(
@@ -516,13 +573,40 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         gpsLp.topMargin = dp(12);
         card.addView(tvGpsPill, gpsLp);
 
-        TextView btnNav = makeOverlayPill("⛶ Открыть Навигатор", "#CC0B2A38", "#00D4FF", "#E0F9FF");
+        // Bottom-left stack: Active Route Banner + [🏁 Маршрут] + [⛶ Навигатор]
+        LinearLayout bottomLeftCol = new LinearLayout(this);
+        bottomLeftCol.setOrientation(LinearLayout.VERTICAL);
+
+        tvRouteBanner = makeOverlayPill("", "#E60B2A38", "#38BDF8", "#E0F9FF");
+        tvRouteBanner.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        tvRouteBanner.setVisibility(View.GONE);
+        tvRouteBanner.setOnClickListener(v -> showActiveRouteActionsDialog());
+        LinearLayout.LayoutParams rbLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rbLp.bottomMargin = dp(8);
+        bottomLeftCol.addView(tvRouteBanner, rbLp);
+
+        LinearLayout navBtnRow = new LinearLayout(this);
+        navBtnRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView btnRoute = makeOverlayPill("🏁 Маршрут", "#DD112842", "#38BDF8", "#E0F9FF");
+        btnRoute.setOnClickListener(v -> showRoutePickerDialog());
+        LinearLayout.LayoutParams rBtnLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rBtnLp.rightMargin = dp(8);
+        navBtnRow.addView(btnRoute, rBtnLp);
+
+        TextView btnNav = makeOverlayPill("⛶ Я.Навигатор", "#CC0B2A38", "#00D4FF", "#E0F9FF");
         btnNav.setOnClickListener(v -> openPreferredNavigator());
+        navBtnRow.addView(btnNav);
+
+        bottomLeftCol.addView(navBtnRow);
+
         FrameLayout.LayoutParams navLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.START);
         navLp.leftMargin = dp(12);
         navLp.bottomMargin = dp(12);
-        card.addView(btnNav, navLp);
+        card.addView(bottomLeftCol, navLp);
 
         LinearLayout ctrls = new LinearLayout(this);
         ctrls.setOrientation(LinearLayout.VERTICAL);
@@ -870,6 +954,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
 
         int tempC = readCpuTempC();
         if (tempC > 0) {
+            lastCpuTempC = tempC;
             tvTemp.setText("CPU " + tempC + "°C");
             if (tempC >= 75) {
                 tvTemp.setTextColor(Color.parseColor("#FB7185"));
@@ -933,6 +1018,8 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         boolean headlights = (lamp != 0) || previewHeadlights;
         boolean handbrake = (brake != 0);
         boolean reverse = (rev != 0);
+        lastHeadlampOn = headlights;
+        lastHandbrakeOn = handbrake;
         if (btStat == 1) btConnected = true;
 
         carStatusView.updateState(headlights, handbrake, reverse, currentSpeedKmh);
@@ -972,6 +1059,18 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     }
 
     private void openPreferredNavigator() {
+        RouteManager.ActiveRoute r = routeManager != null ? routeManager.getActiveRoute() : null;
+        if (r != null) {
+            try {
+                Uri uri = Uri.parse(String.format(Locale.US,
+                        "yandexnavi://build_route_on_map?lat_to=%.5f&lon_to=%.5f", r.destLat, r.destLon));
+                Intent i = new Intent(Intent.ACTION_VIEW, uri);
+                i.setPackage("ru.yandex.yandexnavi");
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                return;
+            } catch (Throwable ignored) {}
+        }
         if (!launchPackageSilent("ru.yandex.yandexnavi")) {
             launchPackageOrToast("com.google.android.apps.maps", "Навигатор");
         }
@@ -1113,6 +1212,20 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         if (mapView != null) {
             mapView.updateGps(location.getLatitude(), location.getLongitude(), location.getBearing(), spd);
         }
+        if (routeManager != null) {
+            routeManager.updateProgress(location.getLatitude(), location.getLongitude());
+            updateRouteBanner();
+        }
+        if (speedCameraManager != null) {
+            float brg = location.hasBearing() ? location.getBearing() : (mapView != null ? mapView.getCarBearing() : 0f);
+            SpeedCameraManager.CameraAlert alert = speedCameraManager.evaluate(
+                    location.getLatitude(), location.getLongitude(), brg, spd);
+            updateCameraBanner(alert);
+        }
+        if (tripLogger != null) {
+            tripLogger.recordSample(location.getLatitude(), location.getLongitude(), spd,
+                    latestObdData, lastHeadlampOn, lastHandbrakeOn, lastCpuTempC);
+        }
     }
 
     @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
@@ -1156,6 +1269,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     protected void onPause() {
         super.onPause();
         if (obdManager != null) obdManager.persistStatsNow();
+        if (tripLogger != null) tripLogger.flush();
         CarMediaListenerService.setUiListener(null);
         try { unregisterReceiver(btMusicReceiver); } catch (Throwable ignored) {}
         try { unregisterReceiver(volumeReceiver); } catch (Throwable ignored) {}
@@ -1172,7 +1286,9 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
 
     private void showFuelSettingsDialog() {
         if (obdManager == null) return;
+        int logCount = tripLogger != null ? tripLogger.getLogFileCount() : 0;
         final String[] items = {
+                "📤 Экспорт логов поездки (CSV, файлов: " + logCount + ")",
                 "🔌 Переподключить OBD (ELM327)",
                 "🔄 Сбросить статистику расхода (км и литры)",
                 "🔧 Открыть Car Scanner (127.0.0.1:35000)",
@@ -1190,15 +1306,20 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
                 .setTitle(String.format(Locale.US, "OBD и Расход (объём %.1f л)", obdManager.getEngineVolL()))
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
+                        if (tripLogger != null) {
+                            String res = tripLogger.exportAndShareLatest(this);
+                            Toast.makeText(this, res, Toast.LENGTH_LONG).show();
+                        }
+                    } else if (which == 1) {
                         obdManager.forceReconnect();
                         Toast.makeText(this, "Переподключение к ELM327…", Toast.LENGTH_SHORT).show();
-                    } else if (which == 1) {
+                    } else if (which == 2) {
                         obdManager.resetStatistics();
                         Toast.makeText(this, "Статистика расхода и пробега сброшена", Toast.LENGTH_SHORT).show();
-                    } else if (which == 2) {
+                    } else if (which == 3) {
                         launchPackageOrToast("com.ovz.carscanner", "Car Scanner");
                     } else {
-                        int vIdx = which - 3;
+                        int vIdx = which - 4;
                         if (vIdx >= 0 && vIdx < vols.length) {
                             obdManager.setEngineVolL(vols[vIdx]);
                             Toast.makeText(this, String.format(Locale.US, "Установлен объём %.1f л", vols[vIdx]), Toast.LENGTH_SHORT).show();
@@ -1241,9 +1362,14 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         if (tvVoltage == null || tvObdBadge == null || tvCoolantBadge == null
                 || tvFuelInstant == null || tvFuelAvg == null || tvFuelDist == null) return;
 
+        latestObdData = d;
         obdEcuReady = d.connected && d.ecuReady && !d.bridgeBusy;
         obdRpm = d.rpm;
         obdEcuSpeedKmh = d.ecuSpeedKmh;
+        if (tripLogger != null && mapView != null) {
+            tripLogger.recordSample(mapView.getCarLat(), mapView.getCarLon(), currentSpeedKmh,
+                    d, lastHeadlampOn, lastHandbrakeOn, lastCpuTempC);
+        }
         if (obdEcuReady && obdEcuSpeedKmh == 0 && obdRpm < 150 && currentSpeedKmh != 0) {
             currentSpeedKmh = 0;
             gpsMoveStreak = 0;
@@ -1324,9 +1450,346 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         }
     }
 
+    // ==================== v2.0: Point B Routing, Safe City Cameras & Offline Map Sync ====================
+
+    private void showRoutePickerDialog() {
+        if (routeManager == null || mapView == null) return;
+        RouteManager.Place home = routeManager.getFavorite("home", "🏠 Дом");
+        RouteManager.Place work = routeManager.getFavorite("work", "💼 Работа");
+
+        java.util.ArrayList<String> labels = new java.util.ArrayList<>();
+        labels.add("🔎 Поиск адреса (Чуй / Бишкек / Иссык-Куль)");
+        labels.add(home != null ? "🏠 Поехать Домой" : "🏠 Сохранить текущее место как «Дом»");
+        labels.add(work != null ? "💼 Поехать на Работу" : "💼 Сохранить текущее место как «Работа»");
+        if (routeManager.getActiveRoute() != null) {
+            labels.add("❌ Сбросить текущий маршрут");
+        }
+        for (RouteManager.Place p : RouteManager.BUILTIN_PLACES) {
+            labels.add("📍 " + p.name + " (офлайн)");
+        }
+        labels.add("📌 Совет: удерживайте палец на карте для точки Б");
+
+        final boolean hasActive = routeManager.getActiveRoute() != null;
+        final int builtinOffset = hasActive ? 4 : 3;
+
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("🏁 Выбрать точку Б (Маршрут)")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    if (which == 0) {
+                        showAddressSearchDialog();
+                    } else if (which == 1) {
+                        if (home != null) {
+                            startRouteTo(home.lat, home.lon, "Дом");
+                        } else {
+                            routeManager.saveFavorite("home", mapView.getCarLat(), mapView.getCarLon());
+                            Toast.makeText(this, "Текущая точка сохранена как «Дом»", Toast.LENGTH_SHORT).show();
+                        }
+                    } else if (which == 2) {
+                        if (work != null) {
+                            startRouteTo(work.lat, work.lon, "Работа");
+                        } else {
+                            routeManager.saveFavorite("work", mapView.getCarLat(), mapView.getCarLon());
+                            Toast.makeText(this, "Текущая точка сохранена как «Работа»", Toast.LENGTH_SHORT).show();
+                        }
+                    } else if (hasActive && which == 3) {
+                        routeManager.clearRoute();
+                        mapView.setRoutePoints(null);
+                        updateRouteBanner();
+                        Toast.makeText(this, "Маршрут сброшен", Toast.LENGTH_SHORT).show();
+                    } else {
+                        int idx = which - builtinOffset;
+                        if (idx >= 0 && idx < RouteManager.BUILTIN_PLACES.length) {
+                            RouteManager.Place p = RouteManager.BUILTIN_PLACES[idx];
+                            startRouteTo(p.lat, p.lon, p.name);
+                        }
+                    }
+                })
+                .setNeutralButton("Обновить Дом/Работу", (d, w) -> showSaveFavoritesDialog())
+                .setNegativeButton("Закрыть", null)
+                .show();
+    }
+
+    private void showSaveFavoritesDialog() {
+        if (routeManager == null || mapView == null) return;
+        String[] opts = {"🏠 Сохранить текущую позицию как «Дом»", "💼 Сохранить текущую позицию как «Работа»"};
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Сохранить избранное")
+                .setItems(opts, (d, w) -> {
+                    routeManager.saveFavorite(w == 0 ? "home" : "work", mapView.getCarLat(), mapView.getCarLon());
+                    Toast.makeText(this, w == 0 ? "Точка «Дом» обновлена" : "Точка «Работа» обновлена", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void showAddressSearchDialog() {
+        final EditText input = new EditText(this);
+        input.setHint("Например: ЦУМ Бишкек, Ошский рынок, Тамчы…");
+        input.setSingleLine(true);
+        input.setTextColor(Color.WHITE);
+        input.setHintTextColor(Color.parseColor("#94A3B8"));
+        input.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("🔎 Поиск точки Б")
+                .setView(input)
+                .setPositiveButton("Найти", (d, w) -> {
+                    String q = input.getText().toString().trim();
+                    if (q.isEmpty()) return;
+                    Toast.makeText(this, "Поиск «" + q + "»…", Toast.LENGTH_SHORT).show();
+                    routeManager.searchAddressAsync(q, (results, err) -> {
+                        if (results == null || results.isEmpty()) {
+                            Toast.makeText(this, err != null ? err : "Адрес не найден", Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        String[] names = new String[results.size()];
+                        for (int i = 0; i < results.size(); i++) names[i] = results.get(i).name;
+                        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                                .setTitle("Выберите адрес")
+                                .setItems(names, (d2, which) -> {
+                                    RouteManager.Place p = results.get(which);
+                                    startRouteTo(p.lat, p.lon, p.name);
+                                })
+                                .setNegativeButton("Отмена", null)
+                                .show();
+                    });
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void showLongPressPointBDialog(double lat, double lon) {
+        String coords = String.format(Locale.US, "%.4f, %.4f", lat, lon);
+        String[] actions = {
+                "🏁 Проложить маршрут сюда (на мини-карте)",
+                "🧭 Поехать сюда в Яндекс Навигаторе",
+                "📷 Добавить камеру 60 км/ч в эту точку"
+        };
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Точка на карте (" + coords + ")")
+                .setItems(actions, (d, which) -> {
+                    if (which == 0) {
+                        startRouteTo(lat, lon, "Точка Б");
+                    } else if (which == 1) {
+                        startRouteTo(lat, lon, "Точка Б");
+                        openPreferredNavigator();
+                    } else {
+                        if (speedCameraManager.addUserCamera(lat, lon, 60, 0, 0)) {
+                            refreshCamerasOnMap();
+                            Toast.makeText(this, "Камера 60 км/ч добавлена!", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void startRouteTo(double toLat, double toLon, String destName) {
+        if (routeManager == null || mapView == null) return;
+        Toast.makeText(this, "Строим маршрут → " + destName + "…", Toast.LENGTH_SHORT).show();
+        routeManager.buildRouteAsync(mapView.getCarLat(), mapView.getCarLon(), toLat, toLon, destName, (route, msg) -> {
+            if (route != null) {
+                mapView.setRoutePoints(route.points);
+                updateRouteBanner();
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void updateRouteBanner() {
+        if (tvRouteBanner == null || routeManager == null) return;
+        RouteManager.ActiveRoute r = routeManager.getActiveRoute();
+        if (r == null) {
+            tvRouteBanner.setVisibility(View.GONE);
+            if (mapView != null) mapView.setRoutePoints(null);
+        } else {
+            String tag = r.offlineFallback ? " (офлайн)" : "";
+            tvRouteBanner.setText(String.format(Locale.US, "🏁 %s • %.1f км • ~%d мин%s  ✕",
+                    r.destName, r.totalKm, r.etaMinutes, tag));
+            tvRouteBanner.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void showActiveRouteActionsDialog() {
+        RouteManager.ActiveRoute r = routeManager != null ? routeManager.getActiveRoute() : null;
+        if (r == null) return;
+        String[] opts = {"🧭 Передать маршрут в Яндекс Навигатор", "❌ Завершить / сбросить маршрут"};
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Маршрут: " + r.destName)
+                .setItems(opts, (d, w) -> {
+                    if (w == 0) {
+                        openPreferredNavigator();
+                    } else {
+                        routeManager.clearRoute();
+                        mapView.setRoutePoints(null);
+                        updateRouteBanner();
+                    }
+                })
+                .setNegativeButton("Закрыть", null)
+                .show();
+    }
+
+    private void showCamerasAndMapsDialog() {
+        if (speedCameraManager == null || offlineMapUpdater == null) return;
+        int margin = speedCameraManager.getOverspeedMargin();
+        String audioStr = speedCameraManager.isAudioEnabled()
+                ? (speedCameraManager.isVoiceEnabled() ? "Голос + сигнал ВКЛ" : "Только сигнал ВКЛ")
+                : "Звук ВЫКЛ";
+        String[] items = {
+                "🔄 Обновить базу камер с GitHub (сейчас: " + speedCameraManager.getCameraCount() + ")",
+                "📷 + Добавить камеру здесь (текущий GPS)",
+                "⚡ Порог предупреждения: +" + margin + " км/ч (60 → " + (60 + margin) + ")",
+                "🔊 Оповещение: " + audioStr,
+                "🔔 Проверить звук / голос предупреждения",
+                "🗺 Докачать офлайн-карту (Чуй + Боом + Иссык-Куль)"
+        };
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("📷 Камеры и Офлайн-карты")
+                .setItems(items, (d, which) -> {
+                    if (which == 0) {
+                        Toast.makeText(this, "Загрузка базы камер с GitHub…", Toast.LENGTH_SHORT).show();
+                        speedCameraManager.updateFromGitHubAsync((ok, msg, total) -> {
+                            refreshCamerasOnMap();
+                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+                        });
+                    } else if (which == 1) {
+                        showAddCameraHereDialog();
+                    } else if (which == 2) {
+                        showMarginPickerDialog();
+                    } else if (which == 3) {
+                        if (!speedCameraManager.isAudioEnabled()) {
+                            speedCameraManager.setAudioEnabled(true);
+                            speedCameraManager.setVoiceEnabled(true);
+                            Toast.makeText(this, "Включено: голос + сигнал", Toast.LENGTH_SHORT).show();
+                        } else if (speedCameraManager.isVoiceEnabled()) {
+                            speedCameraManager.setVoiceEnabled(false);
+                            Toast.makeText(this, "Включено: только короткий сигнал", Toast.LENGTH_SHORT).show();
+                        } else {
+                            speedCameraManager.setAudioEnabled(false);
+                            Toast.makeText(this, "Звук камер выключен (только экран)", Toast.LENGTH_SHORT).show();
+                        }
+                    } else if (which == 4) {
+                        speedCameraManager.testAlertNow();
+                    } else if (which == 5) {
+                        startOfflineMapSyncDialog();
+                    }
+                })
+                .setNegativeButton("Закрыть", null)
+                .show();
+    }
+
+    private void showAddCameraHereDialog() {
+        if (mapView == null || speedCameraManager == null) return;
+        final double lat = mapView.getCarLat();
+        final double lon = mapView.getCarLon();
+        final int brg = Math.round(mapView.getCarBearing());
+        String[] opts = {
+                "Камера 40 км/ч (в обе стороны)",
+                "Камера 60 км/ч (по моему ходу, " + brg + "°)",
+                "Камера 60 км/ч (в обе стороны)",
+                "Камера 90 км/ч (по моему ходу, " + brg + "°)",
+                "Камера 90 км/ч (в обе стороны)"
+        };
+        int[][] cfg = {{40, 0}, {60, 1}, {60, 0}, {90, 1}, {90, 0}};
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Добавить камеру в текущую точку")
+                .setItems(opts, (d, w) -> {
+                    if (speedCameraManager.addUserCamera(lat, lon, cfg[w][0], cfg[w][1], brg)) {
+                        refreshCamerasOnMap();
+                        Toast.makeText(this, "Камера " + cfg[w][0] + " км/ч сохранена!", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void showMarginPickerDialog() {
+        final int[] margins = {0, 5, 8, 9, 10};
+        String[] labels = {
+                "+0 км/ч (строго по знаку: 60 → 60)",
+                "+5 км/ч (60 → 65 км/ч)",
+                "+8 км/ч (60 → 68 км/ч)",
+                "+9 км/ч (рекомендуется для КР: 60 → 69, штраф с 71)",
+                "+10 км/ч (60 → 70 км/ч)"
+        };
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Порог звукового предупреждения")
+                .setItems(labels, (d, w) -> {
+                    speedCameraManager.setOverspeedMargin(margins[w]);
+                    Toast.makeText(this, "Порог установлен: +" + margins[w] + " км/ч", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void startOfflineMapSyncDialog() {
+        if (offlineMapUpdater == null) return;
+        if (offlineMapUpdater.isRunning()) {
+            Toast.makeText(this, "Загрузка офлайн-карт уже идёт…", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int cachedNow = offlineMapUpdater.countCachedTiles();
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("🗺 Офлайн-карта: Чуй + Боом + Иссык-Куль")
+                .setMessage("Сейчас в памяти: " + cachedNow + " тайлов.\n\nДокачать недостающие участки (включая детальное Боомское ущелье z=14) по Wi-Fi/4G?")
+                .setPositiveButton("Докачать", (d, w) -> {
+                    Toast.makeText(this, "Проверяю и докачиваю тайлы Чуй + Боом + Иссык-Куль…", Toast.LENGTH_SHORT).show();
+                    offlineMapUpdater.startSyncChuyBoomIssykKul(new OfflineMapUpdater.ProgressListener() {
+                        @Override
+                        public void onProgress(int done, int total, int downloadedNew) {
+                            if (tvCameraPill != null) {
+                                tvCameraPill.setText("🗺 " + done + "/" + total);
+                            }
+                        }
+
+                        @Override
+                        public void onFinished(boolean cancelled, int downloadedNew, int totalCached) {
+                            refreshCamerasOnMap();
+                            String msg = downloadedNew == 0
+                                    ? ("Офлайн-карта уже полная (" + totalCached + " тайлов)!")
+                                    : ("Докачано +" + downloadedNew + " тайлов! Всего: " + totalCached);
+                            Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void refreshCamerasOnMap() {
+        if (speedCameraManager == null) return;
+        if (mapView != null) mapView.setCameras(speedCameraManager.getCameras());
+        if (tvCameraPill != null) {
+            tvCameraPill.setText("📷 Камеры (" + speedCameraManager.getCameraCount() + ")");
+        }
+    }
+
+    private void updateCameraBanner(SpeedCameraManager.CameraAlert alert) {
+        if (tvCameraBanner == null) return;
+        if (alert == null) {
+            tvCameraBanner.setVisibility(View.GONE);
+            return;
+        }
+        if (alert.overspeed) {
+            tvCameraBanner.setText(String.format(Locale.US, "⚠ СНИЗЬТЕ СКОРОСТЬ! Камера %d • %d м",
+                    alert.camera.speedLimit, alert.distanceMeters));
+            tvCameraBanner.setTextColor(Color.WHITE);
+            tvCameraBanner.setBackground(makeCardDrawable("#EBDC2626", "#FCA5A5", 14));
+        } else {
+            tvCameraBanner.setText(String.format(Locale.US, "📷 Камера %d • %d м",
+                    alert.camera.speedLimit, alert.distanceMeters));
+            tvCameraBanner.setTextColor(Color.parseColor("#FDE68A"));
+            tvCameraBanner.setBackground(makeCardDrawable("#E01E293B", "#F59E0B", 14));
+        }
+        tvCameraBanner.setVisibility(View.VISIBLE);
+    }
+
     @Override
     protected void onDestroy() {
         if (obdManager != null) obdManager.stop();
+        if (tripLogger != null) tripLogger.close();
+        if (speedCameraManager != null) speedCameraManager.shutdown();
+        if (offlineMapUpdater != null) offlineMapUpdater.cancel();
         if (mapView != null) mapView.shutdown();
         super.onDestroy();
     }
