@@ -5,9 +5,9 @@
 **Ultra-lightweight dark automotive launcher for Android head units (KTE / KC97 / MT6797 / Android 8.0+)**  
 *Native Canvas Map & Live Traffic (0 MB WebView) • Direct Blue ELM327 v1.5 OBD-II Fuel Computer (`goc_spp`) • Auto-Night Headlights • 3-Tab Media Widget*
 
-[![Version](https://img.shields.io/badge/version-2.1-00D4FF?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.2-00D4FF?style=for-the-badge)](CHANGELOG.md)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20(API%2026)-34D399?style=for-the-badge)](#requirements--build-from-source)
-[![APK Size](https://img.shields.io/badge/APK%20size-~82%20KB-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
+[![APK Size](https://img.shields.io/badge/APK%20size-~86%20KB-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
 [![RAM Usage](https://img.shields.io/badge/RAM-~30%20MB%20(0%20WebViews)-8B5CF6?style=for-the-badge)](docs/ARCHITECTURE.en.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-94A3B8?style=for-the-badge)](LICENSE)
 

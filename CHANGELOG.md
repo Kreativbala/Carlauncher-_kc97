@@ -1,6 +1,16 @@
 # Changelog / История изменений
 
-## [2.1] — 2026-11-27 (Current Stable / Текущая стабильная)
+## [2.2] — 2026-11-27 (Current Stable / Текущая стабильная)
+- **EN:** Improved SD-968 ELM327 cold-boot & wake reliability (`AT#SP` 4.5s page window, 3x `ATZ/ATI` retry, periodic `AT#SH` stale-handle reset every 3rd failure, and `onResume` wake check).
+- **EN:** Wired **BT Music** Play/Pause/Next/Prev buttons directly to SD-968 hardware AVRCP commands via `/dev/goc_serial` (`AT#VB` unmute + `AT#MA` / `AT#MD` / `AT#ME`).
+- **EN:** Added automatic **DVR («Стражи безопасности») auto-minimize on cold boot** — brings KC97 Cockpit back to front after autostart DVR begins background recording (never interrupts when opened manually).
+- **EN:** Added automatic `NotificationListenerService.requestRebind()` in `onResume()` to keep Yandex Music / Spotify track metadata reliably bound on Android 8.0.
+- **RU:** Улучшен автоподъём `OBDII` на SD-968 после сна и холодного старта (увеличенное окно ожидания 4.5 с, 3 попытки `ATZ/ATI`, очистка зависшего SPP через `AT#SH` на каждой 3-й неудаче и проверка при выходе из сна `onResume`).
+- **RU:** Кнопки **BT Музыка** (Play/Pause/Next/Prev) переведены напрямую на аппаратные AVRCP-команды чипа SD-968 (`/dev/goc_serial`: `AT#VB`, `AT#MA`, `AT#MD`, `AT#ME`).
+- **RU:** Добавлено **авто-сворачивание регистратора «Стражи безопасности»** после автозапуска при включении магнитолы (ручной запуск кнопкой `◉ Стражи` работает как обычно).
+- **RU:** Добавлен `NotificationListenerService.requestRebind()` для надёжного отображения треков Яндекс Музыки и Spotify на Android 8.0.
+
+## [2.1] — 2026-11-27
 - **EN:** Added **true zero-touch cold-boot ELM327 auto-connect**: sends `AT#SP<MAC>\r\n` to SD-968's non-blocking `/dev/goc_serial` PTY before opening `/dev/socket/goc_spp`, so OBD-II connects automatically after every cold start even while a phone is simultaneously streaming Bluetooth audio!
 - **RU:** Добавлен **полный автоподъём `OBDII` после холодного запуска магнитолы**: перед подключением к `/dev/socket/goc_spp` лаунчер автоматически отправляет `AT#SP<MAC>\r\n` в `/dev/goc_serial`, поэтому ELM327 цепляется сам без захода в приложение Bluetooth — даже если одновременно играет музыка с телефона по Bluetooth!
 

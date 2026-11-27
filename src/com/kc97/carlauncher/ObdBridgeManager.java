@@ -134,6 +134,7 @@ public class ObdBridgeManager {
     public void start() {
         if (running) return;
         running = true;
+        startedElapsedMs = SystemClock.elapsedRealtime();
         notifyListener();
         new Thread(this::tcpServerLoop, "OBD-TcpBridge").start();
         new Thread(this::pollLoop, "OBD-Poller").start();
@@ -146,30 +147,62 @@ public class ObdBridgeManager {
         try { if (tcpServer != null) tcpServer.close(); } catch (Throwable ignored) {}
     }
 
+    private int sppDialAttempt = 0;
+    private long startedElapsedMs = 0L;
+
     public void forceReconnect() {
         Log.i(TAG, "Manual/forced OBD reconnect requested");
+        sppDialAttempt++;
         closeActiveSpp();
     }
 
+    public void onActivityResumed() {
+        if (!latest.ecuReady && !externalClientActive
+                && (SystemClock.elapsedRealtime() - startedElapsedMs) > 12_000L) {
+            Log.i(TAG, "Activity resumed while OBD not ready -> triggering fresh SPP dial");
+            sppDialAttempt++;
+            closeActiveSpp();
+        }
+    }
+
     /**
-     * Triggers SD-968 Bluetooth daemon (sdsdk968) to open RFCOMM SPP link to ELM327 on cold boot
-     * via world-writable /dev/goc_serial (AT#SP<MAC>\r\n) — never blocks like goc_control!
+     * Writes a raw Goodocom/SD-968 AT# command to /dev/goc_serial (non-blocking, world-writable).
      */
-    private void dialSppViaGocSerial() {
+    public static boolean sendGocSerialCmd(String atCmd) {
         java.io.FileOutputStream fos = null;
         try {
             fos = new java.io.FileOutputStream("/dev/goc_serial");
-            String cmd = "AT#SP" + obdMac + "\r\n";
-            fos.write(cmd.getBytes(StandardCharsets.US_ASCII));
+            fos.write((atCmd + "\r\n").getBytes(StandardCharsets.US_ASCII));
             fos.flush();
-            Log.i(TAG, "Sent cold-boot SPP dial to /dev/goc_serial: AT#SP" + obdMac);
-            Thread.sleep(2500);
+            return true;
         } catch (Throwable e) {
-            Log.w(TAG, "goc_serial dial skipped: " + e.getMessage());
+            Log.w(TAG, "goc_serial cmd failed (" + atCmd + "): " + e.getMessage());
+            return false;
         } finally {
             if (fos != null) {
                 try { fos.close(); } catch (Throwable ignored) {}
             }
+        }
+    }
+
+    /**
+     * Triggers SD-968 Bluetooth daemon (sdsdk968) to open RFCOMM SPP link to ELM327 via /dev/goc_serial.
+     * Avoids spamming AT#SH on every cycle (which would tear down an in-progress 6-9s Bluetooth page!);
+     * only sends AT#SH on every 3rd consecutive failure to clear truly stuck handles.
+     */
+    private void dialSppViaGocSerial() {
+        try {
+            if (sppDialAttempt > 0 && (sppDialAttempt % 3 == 0)) {
+                sendGocSerialCmd("AT#SH");
+                Thread.sleep(700);
+            }
+            if (sendGocSerialCmd("AT#SP" + obdMac)) {
+                Log.i(TAG, "Sent SPP dial to /dev/goc_serial: AT#SP" + obdMac + " (attempt=" + sppDialAttempt + ")");
+                Thread.sleep(4500);
+            }
+            sppDialAttempt++;
+        } catch (Throwable e) {
+            Log.w(TAG, "goc_serial dial skipped: " + e.getMessage());
         }
     }
 
@@ -181,7 +214,7 @@ public class ObdBridgeManager {
         OutputStream out = sock.getOutputStream();
         out.write((obdMac + "\r\n").getBytes(StandardCharsets.US_ASCII));
         out.flush();
-        Thread.sleep(2400);
+        Thread.sleep(2500);
         return sock;
     }
 
@@ -274,13 +307,16 @@ public class ObdBridgeManager {
                 InputStream in = spp.getInputStream();
                 OutputStream out = spp.getOutputStream();
 
-                String id = sendCmd(in, out, "ATZ", 3500);
-                if (!id.toUpperCase(Locale.US).contains("ELM")) {
-                    id = sendCmd(in, out, "ATI", 2500);
+                String id = "";
+                for (int tries = 0; tries < 3 && running && !externalClientActive; tries++) {
+                    id = sendCmd(in, out, tries == 0 ? "ATZ" : "ATI", 3200);
+                    if (id.toUpperCase(Locale.US).contains("ELM") || id.contains(">")) break;
+                    sleepQuiet(1500);
                 }
-                if (!id.toUpperCase(Locale.US).contains("ELM")) {
+                if (!id.toUpperCase(Locale.US).contains("ELM") && !id.contains(">")) {
                     throw new Exception("No ELM327 response: " + id);
                 }
+                sppDialAttempt = 0;
 
                 sendCmd(in, out, "ATE0", 1500);
                 sendCmd(in, out, "ATL0", 1500);

@@ -5,11 +5,13 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.service.notification.NotificationListenerService;
 import android.database.ContentObserver;
 import android.graphics.Color;
 import android.graphics.Outline;
@@ -78,6 +80,8 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     private TextView pillHandbrake;
     private boolean previewHeadlights = false;
     private boolean nightDimActive = false;
+    private boolean activityResumed = false;
+    private boolean userManuallyOpenedDvr = false;
 
     // Live Blue ELM327 v1.5 OBD-II Fuel Computer + TCP bridge (127.0.0.1:35000)
     private ObdBridgeManager obdManager;
@@ -263,6 +267,26 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         String savedMac = prefs.getString("obd_mac", ObdBridgeManager.DEFAULT_OBD_MAC);
         obdManager = new ObdBridgeManager(this, savedMac, this::onObdUpdated);
         obdManager.start();
+
+        // Auto-return cockpit to front after DVR ("Стражи безопасности") autostart finishes launching on boot
+        scheduleBootDvrAutoMinimize();
+    }
+
+    private void scheduleBootDvrAutoMinimize() {
+        // Only during first 90 seconds after head unit cold boot (never interferes with manual DVR opening!)
+        if (SystemClock.elapsedRealtime() > 95_000L) return;
+        int[] delaysMs = {6500, 13000, 21000};
+        for (int delay : delaysMs) {
+            handler.postDelayed(() -> {
+                if (!activityResumed && !userManuallyOpenedDvr && SystemClock.elapsedRealtime() < 110_000L) {
+                    try {
+                        Intent home = new Intent(MainActivity.this, MainActivity.class);
+                        home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                        startActivity(home);
+                    } catch (Throwable ignored) {}
+                }
+            }, delay);
+        }
     }
 
     /**
@@ -653,7 +677,10 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         card.addView(makeDockTile("⊞", "Меню", "#3B1D5E", "#C084FC", v -> new AppDrawerDialog(this).show(), null));
         card.addView(makeDockTile("➤", "Навигатор", "#0F3D3E", "#2DD4BF", v -> openPreferredNavigator(), null));
         card.addView(makeDockTile("◉", "Стражи", "#4A2511", "#FB923C",
-                v -> launchPackageOrToast("com.fvision.camera", "Стражи безопасности"),
+                v -> {
+                    userManuallyOpenedDvr = true;
+                    launchPackageOrToast("com.fvision.camera", "Стражи безопасности");
+                },
                 v -> {
                     launchPackageOrToast("com.kte.radio", "Радио");
                     return true;
@@ -849,6 +876,11 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
 
     private void onMediaPlayPause() {
         if (TAB_BLUETOOTH.equals(selectedMediaTab)) {
+            // Direct SD-968 hardware AVRCP control via /dev/goc_serial (AT#VB unmute + AT#MA play/pause)
+            new Thread(() -> {
+                ObdBridgeManager.sendGocSerialCmd("AT#VB");
+                ObdBridgeManager.sendGocSerialCmd("AT#MA");
+            }, "BT-PlayPause").start();
             sendBroadcast(new Intent("com.kte.bluetooth_playPause"));
             btPlaying = !btPlaying;
             refreshMediaUi();
@@ -858,13 +890,21 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     }
 
     private void onMediaNext() {
-        if (TAB_BLUETOOTH.equals(selectedMediaTab)) sendBroadcast(new Intent("com.kte.bluetooth_next"));
-        else CarMediaListenerService.skipNext(this, selectedMediaTab);
+        if (TAB_BLUETOOTH.equals(selectedMediaTab)) {
+            new Thread(() -> ObdBridgeManager.sendGocSerialCmd("AT#MD"), "BT-Next").start();
+            sendBroadcast(new Intent("com.kte.bluetooth_next"));
+        } else {
+            CarMediaListenerService.skipNext(this, selectedMediaTab);
+        }
     }
 
     private void onMediaPrev() {
-        if (TAB_BLUETOOTH.equals(selectedMediaTab)) sendBroadcast(new Intent("com.kte.bluetooth_previous"));
-        else CarMediaListenerService.skipPrevious(this, selectedMediaTab);
+        if (TAB_BLUETOOTH.equals(selectedMediaTab)) {
+            new Thread(() -> ObdBridgeManager.sendGocSerialCmd("AT#ME"), "BT-Prev").start();
+            sendBroadcast(new Intent("com.kte.bluetooth_previous"));
+        } else {
+            CarMediaListenerService.skipPrevious(this, selectedMediaTab);
+        }
     }
 
     private void queryKteBtState() {
@@ -1236,7 +1276,14 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
+        if (obdManager != null) obdManager.onActivityResumed();
         CarMediaListenerService.setUiListener(this);
+        if (!CarMediaListenerService.isConnected()) {
+            try {
+                NotificationListenerService.requestRebind(new ComponentName(this, CarMediaListenerService.class));
+            } catch (Throwable ignored) {}
+        }
 
         IntentFilter btFilter = new IntentFilter();
         btFilter.addAction("com.kte.bluetooth_playName");
@@ -1268,6 +1315,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     @Override
     protected void onPause() {
         super.onPause();
+        activityResumed = false;
         if (obdManager != null) obdManager.persistStatsNow();
         if (tripLogger != null) tripLogger.flush();
         CarMediaListenerService.setUiListener(null);
