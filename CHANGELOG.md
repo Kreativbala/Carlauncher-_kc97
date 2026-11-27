@@ -1,6 +1,10 @@
 # Changelog / История изменений
 
-## [2.2] — 2026-11-27 (Current Stable / Текущая стабильная)
+## [2.3] — 2026-11-27 (Current Stable / Текущая стабильная)
+- **EN:** Added persistent `ACTION_SCREEN_ON` / ACC wake receiver: automatically minimizes autostart DVR («Стражи безопасности») after **every ACC sleep/wake cycle** (not just cold boots) AND triggers a clean OBD `AT#SP` wake reconnect immediately without waiting for screen taps.
+- **RU:** Добавлен обработчик пробуждения из сна (`ACTION_SCREEN_ON` / ACC wake): теперь регистратор «Стражи безопасности» **автоматически сворачивается после каждого сна и запуска машины** (а не только после холодной перезагрузки), а OBD сразу автоматически запускает чистый переподъём `AT#SP` без касания экрана.
+
+## [2.2] — 2026-11-27
 - **EN:** Improved SD-968 ELM327 cold-boot & wake reliability (`AT#SP` 4.5s page window, 3x `ATZ/ATI` retry, periodic `AT#SH` stale-handle reset every 3rd failure, and `onResume` wake check).
 - **EN:** Wired **BT Music** Play/Pause/Next/Prev buttons directly to SD-968 hardware AVRCP commands via `/dev/goc_serial` (`AT#VB` unmute + `AT#MA` / `AT#MD` / `AT#ME`).
 - **EN:** Added automatic **DVR («Стражи безопасности») auto-minimize on cold boot** — brings KC97 Cockpit back to front after autostart DVR begins background recording (never interrupts when opened manually).

@@ -82,6 +82,24 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     private boolean nightDimActive = false;
     private boolean activityResumed = false;
     private boolean userManuallyOpenedDvr = false;
+    private long wakeAutoMinimizeUntilMs = 0L;
+
+    private final BroadcastReceiver screenWakeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String act = intent.getAction();
+            if (Intent.ACTION_SCREEN_ON.equals(act) || Intent.ACTION_USER_PRESENT.equals(act)) {
+                userManuallyOpenedDvr = false;
+                scheduleWakeDvrAutoMinimize();
+                if (obdManager != null) {
+                    handler.postDelayed(() -> {
+                        if (obdManager != null) obdManager.onAccWake();
+                    }, 3500L);
+                }
+            }
+        }
+    };
 
     // Live Blue ELM327 v1.5 OBD-II Fuel Computer + TCP bridge (127.0.0.1:35000)
     private ObdBridgeManager obdManager;
@@ -268,17 +286,25 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         obdManager = new ObdBridgeManager(this, savedMac, this::onObdUpdated);
         obdManager.start();
 
-        // Auto-return cockpit to front after DVR ("Стражи безопасности") autostart finishes launching on boot
-        scheduleBootDvrAutoMinimize();
+        // Register persistent screen-on receiver to handle BOTH cold boot AND ACC sleep/wake cycles!
+        try {
+            IntentFilter wakeFilter = new IntentFilter();
+            wakeFilter.addAction(Intent.ACTION_SCREEN_ON);
+            wakeFilter.addAction(Intent.ACTION_USER_PRESENT);
+            registerReceiver(screenWakeReceiver, wakeFilter);
+        } catch (Throwable ignored) {}
+
+        // Auto-return cockpit to front after DVR ("Стражи безопасности") autostart finishes launching
+        scheduleWakeDvrAutoMinimize();
     }
 
-    private void scheduleBootDvrAutoMinimize() {
-        // Only during first 90 seconds after head unit cold boot (never interferes with manual DVR opening!)
-        if (SystemClock.elapsedRealtime() > 95_000L) return;
-        int[] delaysMs = {6500, 13000, 21000};
+    private void scheduleWakeDvrAutoMinimize() {
+        wakeAutoMinimizeUntilMs = SystemClock.elapsedRealtime() + 26_000L;
+        int[] delaysMs = {4500, 9000, 15000, 22000};
         for (int delay : delaysMs) {
             handler.postDelayed(() -> {
-                if (!activityResumed && !userManuallyOpenedDvr && SystemClock.elapsedRealtime() < 110_000L) {
+                if (!activityResumed && !userManuallyOpenedDvr
+                        && SystemClock.elapsedRealtime() <= wakeAutoMinimizeUntilMs) {
                     try {
                         Intent home = new Intent(MainActivity.this, MainActivity.class);
                         home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
@@ -1834,6 +1860,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
 
     @Override
     protected void onDestroy() {
+        try { unregisterReceiver(screenWakeReceiver); } catch (Throwable ignored) {}
         if (obdManager != null) obdManager.stop();
         if (tripLogger != null) tripLogger.close();
         if (speedCameraManager != null) speedCameraManager.shutdown();

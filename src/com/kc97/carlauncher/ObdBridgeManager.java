@@ -166,6 +166,20 @@ public class ObdBridgeManager {
     }
 
     /**
+     * Called on ACC wake (ACTION_SCREEN_ON): forces a clean SPP re-dial after SD-968 wakes from sleep.
+     */
+    public void onAccWake() {
+        if (!externalClientActive) {
+            Log.i(TAG, "ACC wake detected -> resetting stale OBD link for fresh AT#SP dial");
+            latest.ecuReady = false;
+            latest.connecting = true;
+            sppDialAttempt = 0; // fresh AT#SP first (no unnecessary AT#SH on clean wake)
+            notifyListener();
+            closeActiveSpp();
+        }
+    }
+
+    /**
      * Writes a raw Goodocom/SD-968 AT# command to /dev/goc_serial (non-blocking, world-writable).
      */
     public static boolean sendGocSerialCmd(String atCmd) {
