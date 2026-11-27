@@ -151,7 +151,30 @@ public class ObdBridgeManager {
         closeActiveSpp();
     }
 
+    /**
+     * Triggers SD-968 Bluetooth daemon (sdsdk968) to open RFCOMM SPP link to ELM327 on cold boot
+     * via world-writable /dev/goc_serial (AT#SP<MAC>\r\n) — never blocks like goc_control!
+     */
+    private void dialSppViaGocSerial() {
+        java.io.FileOutputStream fos = null;
+        try {
+            fos = new java.io.FileOutputStream("/dev/goc_serial");
+            String cmd = "AT#SP" + obdMac + "\r\n";
+            fos.write(cmd.getBytes(StandardCharsets.US_ASCII));
+            fos.flush();
+            Log.i(TAG, "Sent cold-boot SPP dial to /dev/goc_serial: AT#SP" + obdMac);
+            Thread.sleep(2500);
+        } catch (Throwable e) {
+            Log.w(TAG, "goc_serial dial skipped: " + e.getMessage());
+        } finally {
+            if (fos != null) {
+                try { fos.close(); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
     private LocalSocket openSppLink() throws Exception {
+        dialSppViaGocSerial();
         LocalSocket sock = new LocalSocket();
         sock.connect(new LocalSocketAddress("/dev/socket/goc_spp", LocalSocketAddress.Namespace.FILESYSTEM));
         sock.setSoTimeout(1500);

@@ -1,6 +1,10 @@
 # Changelog / История изменений
 
-## [2.0] — 2026-11-26 (Current Stable / Текущая стабильная)
+## [2.1] — 2026-11-27 (Current Stable / Текущая стабильная)
+- **EN:** Added **true zero-touch cold-boot ELM327 auto-connect**: sends `AT#SP<MAC>\r\n` to SD-968's non-blocking `/dev/goc_serial` PTY before opening `/dev/socket/goc_spp`, so OBD-II connects automatically after every cold start even while a phone is simultaneously streaming Bluetooth audio!
+- **RU:** Добавлен **полный автоподъём `OBDII` после холодного запуска магнитолы**: перед подключением к `/dev/socket/goc_spp` лаунчер автоматически отправляет `AT#SP<MAC>\r\n` в `/dev/goc_serial`, поэтому ELM327 цепляется сам без захода в приложение Bluetooth — даже если одновременно играет музыка с телефона по Bluetooth!
+
+## [2.0] — 2026-11-26
 - **EN:** Added **Point B Routing** right on the native map (`🏁 Маршрут`: address search, Home/Work favorites, offline Chuy & Issyk-Kul cities, map long-press, OSRM polyline + offline Boom Gorge highway corridor fallback + persistent route across restarts + 1-tap Yandex Navigator handoff).
 - **EN:** Added **Safe City Speed Cameras** (`📷 Камеры`: 135 bundled KG cameras including M-41 Belovodskoe→Bishkek 60 km/h, direction-aware 420m lookahead, configurable `+9 km/h` warning margin, Russian TTS + chime with AudioFocus music ducking, 1-tap GitHub DB sync, 1-tap `+ Camera here`, custom `speedcam_custom.txt` support).
 - **EN:** Added **On-Device Offline Map Sync** (`OfflineMapUpdater`) to top up Chuy + high-detail Boom Gorge (`z=14`) + Issyk-Kul tiles directly over Wi-Fi without a PC.
