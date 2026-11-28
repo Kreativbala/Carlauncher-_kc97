@@ -30,7 +30,8 @@ Core design principle — **zero external dependencies and zero WebViews**:
 
 On KTE head units using the external **SD-968** UART Bluetooth module (`/dev/ttyMT3`, daemon `/ksys/bin/sdsdk968`), Android's standard `com.android.bluetooth` service is stripped, but SPP access is exposed through a world-accessible Unix socket:
 - Socket path: `/dev/socket/goc_spp` (`srwxrwxrwx`, usable without root).
-- Handshake: write `<12-char-MAC>\r\n` (e.g., `001DA50821EB\r\n`) and wait `~2.4 s` for RFCOMM link bring-up.
+- **Critical `sdsdk968` binary detail (`sub_97c0` @ `0x0097e8`):** when `spp_handle == 0` after reboot/sleep, the daemon checks `cmp r1, #0xc` (`len == 12`)! You MUST write **strictly 12 ASCII bytes of the MAC address WITHOUT `\r\n`** (e.g., `"001DA50821EB"`) and wait `~4.5 s` for `bt_spp_connect` (`0x18b9c`) to open the RFCOMM channel. Appending `\r\n` (14 bytes) skips `bt_spp_connect`, while sending `AT#SP` to `/dev/goc_serial` triggers Apple iAP and forces `KteBTService` to kill/restart `sdsdk968`.
+- Auto-MAC discovery: `ObdBridgeManager` automatically parses `/data/goc/bt_conf.ini` (`[PAIRSTLIST]`) to discover the paired `OBDII` adapter address.
 - Once connected, the socket behaves as a raw transparent serial link to ELM327.
 
 ### Reliable Honda ECU Reconnect Cycle (ISO 9141-2)

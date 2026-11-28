@@ -65,7 +65,7 @@ public class ObdBridgeManager {
 
     private final SharedPreferences prefs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final String obdMac;
+    private volatile String obdMac;
     private volatile ObdListener listener;
     private volatile boolean running = false;
     private volatile boolean externalClientActive = false;
@@ -148,41 +148,130 @@ public class ObdBridgeManager {
     }
 
     private long startedElapsedMs = 0L;
-    private long lastGocSerialDialMs = 0L;
-    private volatile boolean forceDialNext = false;
 
     public void forceReconnect() {
         Log.i(TAG, "Manual/forced OBD reconnect requested");
-        forceDialNext = true;
+        refreshObdMacFromBtConf();
         closeActiveSpp();
     }
 
     public void onActivityResumed() {
-        if (!latest.ecuReady && !externalClientActive
-                && (SystemClock.elapsedRealtime() - startedElapsedMs) > 12_000L
-                && (SystemClock.elapsedRealtime() - lastGocSerialDialMs) > 45_000L) {
-            Log.i(TAG, "Activity resumed while OBD not ready -> scheduling gentle SPP wake");
-            forceDialNext = true;
-            closeActiveSpp();
-        }
+        refreshObdMacFromBtConf();
     }
 
     /**
-     * Called on ACC wake (ACTION_SCREEN_ON): forces one clean SPP wake dial after SD-968 wakes from sleep.
+     * Called on ACC wake (ACTION_SCREEN_ON): closes any stale sleeping SPP socket so pollLoop immediately reconnects.
      */
     public void onAccWake() {
         if (!externalClientActive) {
-            Log.i(TAG, "ACC wake detected -> scheduling single gentle AT#SP wake dial");
+            Log.i(TAG, "ACC wake detected -> refreshing OBD SPP session");
+            refreshObdMacFromBtConf();
             latest.ecuReady = false;
             latest.connecting = true;
-            forceDialNext = true;
             notifyListener();
             closeActiveSpp();
         }
     }
 
     /**
-     * Writes a raw Goodocom/SD-968 AT# command to /dev/goc_serial (non-blocking, world-writable).
+     * Auto-discovers paired OBD-II adapter MAC from world-readable /data/goc/bt_conf.ini
+     * (written by sdsdk968 when any OBDII / ELM327 / Vgate / V-LINK adapter is paired),
+     * so even re-pairing or swapping OBD adapters works automatically without manual config!
+     */
+    private void refreshObdMacFromBtConf() {
+        java.io.BufferedReader br = null;
+        try {
+            java.io.File f = new java.io.File("/data/goc/bt_conf.ini");
+            if (!f.canRead()) return;
+            br = new java.io.BufferedReader(new java.io.FileReader(f));
+            java.util.Map<String, String> addrs = new java.util.HashMap<>();
+            java.util.Map<String, String> names = new java.util.HashMap<>();
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                int eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                String k = line.substring(0, eq).trim();
+                String v = line.substring(eq + 1).trim();
+                if (k.startsWith("addr") && v.length() == 12) {
+                    addrs.put(k.substring(4), v.toUpperCase(Locale.US));
+                } else if (k.startsWith("name") && !v.isEmpty()) {
+                    names.put(k.substring(4), v);
+                }
+            }
+            for (java.util.Map.Entry<String, String> e : names.entrySet()) {
+                String nm = e.getValue().toUpperCase(Locale.US);
+                if (nm.contains("OBD") || nm.contains("ELM") || nm.contains("V-LINK")
+                        || nm.contains("VLINK") || nm.contains("VGATE") || nm.contains("KONNWEI")) {
+                    String foundMac = addrs.get(e.getKey());
+                    if (foundMac != null && foundMac.length() == 12 && !foundMac.equals(obdMac)) {
+                        Log.i(TAG, "Auto-detected paired OBDII MAC from bt_conf.ini: " + foundMac + " (" + e.getValue() + ")");
+                        obdMac = foundMac;
+                    }
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (br != null) {
+                try { br.close(); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    /**
+     * Reads the paired phone display name from /data/goc/bt_conf.ini ([LASTDEV] -> nameN)
+     * so BT Music tab shows the paired phone name immediately after reboot.
+     */
+    public static String readLastPhoneNameFromBtConf() {
+        java.io.BufferedReader br = null;
+        try {
+            java.io.File f = new java.io.File("/data/goc/bt_conf.ini");
+            if (!f.canRead()) return "";
+            br = new java.io.BufferedReader(new java.io.FileReader(f));
+            java.util.Map<String, String> addrs = new java.util.HashMap<>();
+            java.util.Map<String, String> names = new java.util.HashMap<>();
+            String lastAddr = "";
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                int eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                String k = line.substring(0, eq).trim();
+                String v = line.substring(eq + 1).trim();
+                if ("addr".equals(k) && v.length() == 12) {
+                    lastAddr = v.toUpperCase(Locale.US);
+                } else if (k.startsWith("addr") && v.length() == 12) {
+                    addrs.put(k.substring(4), v.toUpperCase(Locale.US));
+                } else if (k.startsWith("name") && !v.isEmpty()) {
+                    names.put(k.substring(4), v);
+                }
+            }
+            for (java.util.Map.Entry<String, String> e : addrs.entrySet()) {
+                String mac = e.getValue();
+                String nm = names.get(e.getKey());
+                if (nm == null || nm.isEmpty()) continue;
+                if (!lastAddr.isEmpty() && lastAddr.equals(mac) && !nm.toUpperCase(Locale.US).contains("OBD")) {
+                    return nm;
+                }
+            }
+            for (java.util.Map.Entry<String, String> e : names.entrySet()) {
+                String nm = e.getValue();
+                if (!nm.toUpperCase(Locale.US).contains("OBD") && !nm.toUpperCase(Locale.US).contains("ELM")) {
+                    return nm;
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (br != null) {
+                try { br.close(); } catch (Throwable ignored) {}
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Writes a raw Goodocom/SD-968 AT# command to /dev/goc_serial (used ONLY for explicit AVRCP music keys).
      */
     public static boolean sendGocSerialCmd(String atCmd) {
         java.io.FileOutputStream fos = null;
@@ -202,36 +291,25 @@ public class ObdBridgeManager {
     }
 
     /**
-     * Gentle, zero-spam SD-968 SPP wake:
-     * - NEVER sends AT#SH automatically (prevents corrupting OBDII pairing or dropping phone HFP/BT music!).
-     * - Sends AT#SP<MAC> at most once per 90 seconds (or on explicit ACC wake / manual reconnect),
-     *   letting passive /dev/socket/goc_spp checks run cleanly in between.
+     * Exact reverse-engineered sdsdk968 /dev/socket/goc_spp protocol (sub_97c0 @ 0x0097e8):
+     * - sdsdk968 checks `cmp r1, #0xc` (exact 12-byte MAC length, WITHOUT \r\n!).
+     * - Sending 14 bytes (MAC + \r\n) failed `r1 == 12`, skipping `bt_spp_connect` (0x18b9c) after reboot!
+     * - Sending AT#SP on /dev/goc_serial triggered Apple iAP and reset HFP / killed sdsdk968!
+     * - Sending EXACT 12 ASCII bytes of MAC triggers native RFCOMM SPP connect cleanly with zero HFP impact!
      */
-    private void dialSppIfAllowed() {
-        long now = SystemClock.elapsedRealtime();
-        boolean allowed = forceDialNext || (lastGocSerialDialMs == 0L) || ((now - lastGocSerialDialMs) >= 90_000L);
-        if (!allowed) return;
-        forceDialNext = false;
-        lastGocSerialDialMs = now;
-        try {
-            if (sendGocSerialCmd("AT#SP" + obdMac)) {
-                Log.i(TAG, "Sent gentle SPP dial to /dev/goc_serial: AT#SP" + obdMac);
-                Thread.sleep(4500);
-            }
-        } catch (Throwable e) {
-            Log.w(TAG, "goc_serial dial skipped: " + e.getMessage());
-        }
-    }
-
     private LocalSocket openSppLink() throws Exception {
-        dialSppIfAllowed();
+        refreshObdMacFromBtConf();
+        String targetMac = obdMac;
         LocalSocket sock = new LocalSocket();
         sock.connect(new LocalSocketAddress("/dev/socket/goc_spp", LocalSocketAddress.Namespace.FILESYSTEM));
-        sock.setSoTimeout(1500);
+        sock.setSoTimeout(1800);
         OutputStream out = sock.getOutputStream();
-        out.write((obdMac + "\r\n").getBytes(StandardCharsets.US_ASCII));
+        // MUST be exact 12 ASCII bytes (no \r, no \n) so sdsdk968 sub_97c0 matches `cmp r1, #0xc`!
+        out.write(targetMac.getBytes(StandardCharsets.US_ASCII));
         out.flush();
-        Thread.sleep(2500);
+        Log.i(TAG, "Sent exact 12-byte OBD SPP connect to /dev/socket/goc_spp: " + targetMac);
+        // Wait 4.5s so sdsdk968 completes RFCOMM SPP paging (`spp_handle > 0`) before first ELM327 AT command
+        Thread.sleep(4500);
         return sock;
     }
 
@@ -325,10 +403,10 @@ public class ObdBridgeManager {
                 OutputStream out = spp.getOutputStream();
 
                 String id = "";
-                for (int tries = 0; tries < 3 && running && !externalClientActive; tries++) {
-                    id = sendCmd(in, out, tries == 0 ? "ATZ" : "ATI", 3200);
+                for (int tries = 0; tries < 4 && running && !externalClientActive; tries++) {
+                    id = sendCmd(in, out, tries == 1 ? "ATZ" : "ATI", 3200);
                     if (id.toUpperCase(Locale.US).contains("ELM") || id.contains(">")) break;
-                    sleepQuiet(1500);
+                    sleepQuiet(1800);
                 }
                 if (!id.toUpperCase(Locale.US).contains("ELM") && !id.contains(">")) {
                     throw new Exception("No ELM327 response: " + id);

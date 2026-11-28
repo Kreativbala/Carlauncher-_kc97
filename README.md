@@ -5,9 +5,9 @@
 **Ultra-lightweight dark automotive launcher for Android head units (KTE / KC97 / MT6797 / Android 8.0+)**  
 *Native Canvas Map & Live Traffic (0 MB WebView) • Direct Blue ELM327 v1.5 OBD-II Fuel Computer (`goc_spp`) • Auto-Night Headlights • 3-Tab Media Widget*
 
-[![Version](https://img.shields.io/badge/version-2.4-00D4FF?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.5-00D4FF?style=for-the-badge)](CHANGELOG.md)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20(API%2026)-34D399?style=for-the-badge)](#requirements--build-from-source)
-[![APK Size](https://img.shields.io/badge/APK%20size-~86%20KB-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
+[![APK Size](https://img.shields.io/badge/APK%20size-~95%20KB-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
 [![RAM Usage](https://img.shields.io/badge/RAM-~30%20MB%20(0%20WebViews)-8B5CF6?style=for-the-badge)](docs/ARCHITECTURE.en.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-94A3B8?style=for-the-badge)](LICENSE)
 
@@ -32,9 +32,17 @@ Many aftermarket Chinese Android head units (e.g., **KC97 / KTE / Helio X20 MT67
 
 ---
 
-## Key Features (v2.0)
+## Key Features (v2.5)
 
-### 0. New in v2.0 — Autonomous Routing, Safe City Cameras & Telemetry Black Box
+### 0. New in v2.5 — Binary-Verified SD-968 OBD Auto-Connect, Permanent Media Access & Live Playlist Queue
+- **100% Automatic OBD-II RFCOMM Connect across Reboots (`sdsdk968` Exact 12-Byte Fix):**
+  - Disassembly of `/ksys/bin/sdsdk968` (`sub_97c0` @ `0x0097e8`: `cmp r1, #0xc`) revealed that `/dev/socket/goc_spp` only invokes `bt_spp_connect()` when the initial write is **strictly 12 ASCII bytes** (`"001DA50821EB"`, **no `\r\n`!**), and sending `AT#SP` on `/dev/goc_serial` actually triggered Apple iAP and killed `sdsdk968`!
+  - `ObdBridgeManager` now sends the exact 12-byte MAC frame, auto-discovers paired `OBDII` MAC and phone name from `/data/goc/bt_conf.ini`, and never disturbs phone Bluetooth HFP/A2DP.
+- **Permanent Yandex Music & Spotify Permissions + Live Playlist Selector (`☰ Плейлист`):**
+  - Installs a system base copy into `/kuser/app/KC97CarLauncher/KC97CarLauncher.apk` (`FLAG_SYSTEM` on KTE Android 8 without touching dm-verity `/system`), auto-enables `enabled_notification_listeners` via `WRITE_SECURE_SETTINGS`, and includes a zero-permission `su 0 dumpsys media_session` + passive broadcast fallback so track metadata never resets across restarts.
+  - Added interactive **`☰ Плейлист (N)`** dialog in the Media Card (`MediaController.getQueue()` + 1-tap track jump `skipToQueueItem()` + `"Далее: <next track>"` preview + persistent last-played track across car restarts).
+
+### 0b. Autonomous Routing, Safe City Cameras & Telemetry Black Box (v2.0+)
 - **Point B Routing on Main Map (`🏁 Маршрут`):**
   - Search addresses, pick saved **🏠 Home / 💼 Work**, choose built-in **offline Chuy & Issyk-Kul cities**, or **long-press anywhere on the map** to set Point B.
   - Draws a glowing neon route polyline + live remaining `km` and `ETA` directly on the native dark map, with 1-tap handoff to **Yandex Navigator** (`yandexnavi://build_route_on_map`).

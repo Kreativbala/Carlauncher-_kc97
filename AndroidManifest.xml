@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.kc97.carlauncher"
-    android:versionCode="15"
-    android:versionName="2.4">
+    android:versionCode="16"
+    android:versionName="2.5">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
 
@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.MEDIA_CONTENT_CONTROL" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -25,13 +26,11 @@
 
         <activity
             android:name=".MainActivity"
-            android:clearTaskOnLaunch="true"
             android:configChanges="orientation|screenSize|keyboardHidden|navigation|uiMode"
             android:excludeFromRecents="true"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="sensorLandscape"
-            android:stateNotNeeded="true">
+            android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />

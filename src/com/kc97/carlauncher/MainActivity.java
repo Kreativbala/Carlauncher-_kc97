@@ -92,6 +92,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
             String act = intent.getAction();
             if (Intent.ACTION_SCREEN_ON.equals(act) || Intent.ACTION_USER_PRESENT.equals(act)) {
                 userManuallyOpenedDvr = false;
+                CarMediaListenerService.ensurePermissionAndBind(MainActivity.this);
                 triggerManagedDvrAutostart(true);
                 if (obdManager != null) {
                     handler.postDelayed(() -> {
@@ -149,6 +150,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     private ImageView ivCover;
     private TextView tvTrackTitle;
     private TextView tvTrackArtist;
+    private TextView btnPlaylist;
     private MediaIconButton btnPrev;
     private MediaIconButton btnPlayPause;
     private MediaIconButton btnNext;
@@ -246,6 +248,19 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
                         btDeviceName = ((String) v).trim();
                     }
                 }
+            } else if (act.startsWith("com.spotify.music.") || act.startsWith("com.android.music.") || act.startsWith("ru.yandex.music.")) {
+                if (ex != null) {
+                    String track = ex.getString("track");
+                    String artist = ex.getString("artist");
+                    Boolean playing = ex.containsKey("playing") ? ex.getBoolean("playing") : null;
+                    String pkg = act.startsWith("com.spotify.music.") ? TAB_SPOTIFY
+                            : (act.startsWith("ru.yandex.music.") ? TAB_YANDEX : ex.getString("package"));
+                    if (pkg == null || pkg.isEmpty()) {
+                        pkg = TAB_SPOTIFY.equals(selectedMediaTab) ? TAB_SPOTIFY : TAB_YANDEX;
+                    }
+                    CarMediaListenerService.onBroadcastMetadata(MainActivity.this, pkg, track, artist, playing);
+                }
+                return;
             }
             if (TAB_BLUETOOTH.equals(selectedMediaTab)) {
                 refreshMediaUi();
@@ -263,6 +278,10 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         selectedMediaTab = prefs.getString(KEY_MEDIA_TAB, TAB_YANDEX);
         tripStartElapsedMs = SystemClock.elapsedRealtime();
+        String pairedPhone = ObdBridgeManager.readLastPhoneNameFromBtConf();
+        if (!pairedPhone.isEmpty()) {
+            btDeviceName = pairedPhone;
+        }
 
         speedCameraManager = new SpeedCameraManager(this);
         routeManager = new RouteManager(this);
@@ -272,6 +291,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         setContentView(buildRootLayout());
         requestPermissionsIfNeeded();
         applyBootSwappinessAsync();
+        CarMediaListenerService.ensurePermissionAndBind(this);
 
         if (mapView != null) {
             mapView.setCameras(speedCameraManager.getCameras());
@@ -344,6 +364,11 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
      */
     private void applyBootSwappinessAsync() {
         new Thread(() -> {
+            try {
+                // Prevent Android MediaScanner from scanning thousands of cached map PNGs & CSV logs on boot
+                new java.io.File("/sdcard/KC97MapCache/.nomedia").createNewFile();
+                new java.io.File("/sdcard/KC97Logs/.nomedia").createNewFile();
+            } catch (Throwable ignored) {}
             try {
                 Process p = Runtime.getRuntime().exec(new String[]{"su", "0", "sh", "-c", "echo 25 > /proc/sys/vm/swappiness"});
                 p.waitFor();
@@ -836,6 +861,10 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         rightCol.setOrientation(LinearLayout.VERTICAL);
         rightCol.setGravity(Gravity.CENTER_VERTICAL);
 
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
         tvTrackTitle = new TextView(this);
         tvTrackTitle.setText("Яндекс Музыка");
         tvTrackTitle.setTextColor(Color.parseColor("#F8FAFC"));
@@ -843,7 +872,26 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         tvTrackTitle.getPaint().setFakeBoldText(true);
         tvTrackTitle.setSingleLine(true);
         tvTrackTitle.setEllipsize(TextUtils.TruncateAt.END);
-        rightCol.addView(tvTrackTitle);
+        tvTrackTitle.setOnClickListener(v -> {
+            if (!TAB_BLUETOOTH.equals(selectedMediaTab)) showMediaPlaylistDialog();
+            else openSelectedMediaApp();
+        });
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        titleLp.rightMargin = dp(6);
+        titleRow.addView(tvTrackTitle, titleLp);
+
+        btnPlaylist = new TextView(this);
+        btnPlaylist.setText("☰ Плейлист");
+        btnPlaylist.setTextColor(Color.parseColor("#E2E8F0"));
+        btnPlaylist.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        btnPlaylist.getPaint().setFakeBoldText(true);
+        btnPlaylist.setSingleLine(true);
+        btnPlaylist.setPadding(dp(9), dp(4), dp(9), dp(4));
+        btnPlaylist.setBackground(makeCardDrawable("#1B2536", "#334155", 9));
+        btnPlaylist.setOnClickListener(v -> showMediaPlaylistDialog());
+        titleRow.addView(btnPlaylist);
+
+        rightCol.addView(titleRow);
 
         tvTrackArtist = new TextView(this);
         tvTrackArtist.setText("Нажмите ▶ для запуска");
@@ -851,6 +899,10 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         tvTrackArtist.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         tvTrackArtist.setSingleLine(true);
         tvTrackArtist.setEllipsize(TextUtils.TruncateAt.END);
+        tvTrackArtist.setOnClickListener(v -> {
+            if (!TAB_BLUETOOTH.equals(selectedMediaTab)) showMediaPlaylistDialog();
+            else openSelectedMediaApp();
+        });
         LinearLayout.LayoutParams artistLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         artistLp.bottomMargin = dp(10);
@@ -978,6 +1030,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
 
         if (isBt) {
             tvPermHint.setVisibility(View.GONE);
+            if (btnPlaylist != null) btnPlaylist.setVisibility(View.GONE);
             setAppIconCover("com.kte.bluetooth");
             String title = !btTrackName.isEmpty() ? btTrackName : "Bluetooth Музыка";
             String sub = !btArtistName.isEmpty() ? btArtistName
@@ -989,23 +1042,36 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
             return;
         }
 
-        CarMediaListenerService.TrackInfo info = CarMediaListenerService.getTrackInfo(selectedMediaTab);
+        if (btnPlaylist != null) {
+            btnPlaylist.setVisibility(View.VISIBLE);
+        }
+
+        CarMediaListenerService.TrackInfo info = CarMediaListenerService.getTrackInfo(this, selectedMediaTab);
         boolean permGrantedInSettings = false;
         try {
             String enabled = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
             permGrantedInSettings = enabled != null && enabled.contains(getPackageName());
         } catch (Throwable ignored) {}
-        if (!CarMediaListenerService.isConnected() && permGrantedInSettings) {
-            try {
-                NotificationListenerService.requestRebind(new ComponentName(this, CarMediaListenerService.class));
-            } catch (Throwable ignored) {}
+        if (!CarMediaListenerService.isConnected()) {
+            CarMediaListenerService.ensurePermissionAndBind(this);
         }
-        tvPermHint.setVisibility((CarMediaListenerService.isConnected() || permGrantedInSettings) ? View.GONE : View.VISIBLE);
+        tvPermHint.setVisibility((CarMediaListenerService.isConnected() || permGrantedInSettings || info.hasSession) ? View.GONE : View.VISIBLE);
+
+        if (btnPlaylist != null) {
+            btnPlaylist.setText(info.queueSize > 1 ? ("☰ Плейлист (" + info.queueSize + ")") : "☰ Плейлист");
+        }
 
         if (info.hasSession && info.title != null && !info.title.isEmpty()) {
             tvTrackTitle.setText(info.title);
-            tvTrackArtist.setText(info.artist != null && !info.artist.isEmpty()
-                    ? info.artist : (isSpotify ? "Spotify" : "Яндекс Музыка"));
+            String baseArtist = (info.artist != null && !info.artist.isEmpty())
+                    ? info.artist : (isSpotify ? "Spotify" : "Яндекс Музыка");
+            if (info.nextTrackTitle != null && !info.nextTrackTitle.isEmpty()) {
+                tvTrackArtist.setText(baseArtist + "  •  Далее: " + info.nextTrackTitle);
+            } else if (info.fromSavedCache) {
+                tvTrackArtist.setText(baseArtist + "  •  Нажмите ▶");
+            } else {
+                tvTrackArtist.setText(baseArtist);
+            }
             btnPlayPause.setIconType(info.playing ? MediaIconButton.ICON_PAUSE : MediaIconButton.ICON_PLAY);
             if (info.artwork != null) {
                 ivCover.setPadding(0, 0, 0, 0);
@@ -1019,6 +1085,52 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
             btnPlayPause.setIconType(MediaIconButton.ICON_PLAY);
             setAppIconCover(selectedMediaTab);
         }
+    }
+
+    private void showMediaPlaylistDialog() {
+        final boolean isSpotify = TAB_SPOTIFY.equals(selectedMediaTab);
+        final String appLabel = isSpotify ? "Spotify" : "Яндекс Музыка";
+        final List<CarMediaListenerService.QueueEntry> queue =
+                CarMediaListenerService.getPlaylist(this, selectedMediaTab);
+
+        if (queue.isEmpty()) {
+            new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                    .setTitle("☰ Плейлист — " + appLabel)
+                    .setMessage("Запустите воспроизведение в " + appLabel + ", чтобы увидеть очередь треков и переключать песни прямо отсюда.")
+                    .setPositiveButton("Открыть " + appLabel, (d, w) -> openSelectedMediaApp())
+                    .setNegativeButton("Закрыть", null)
+                    .show();
+            return;
+        }
+
+        String[] labels = new String[queue.size()];
+        for (int i = 0; i < queue.size(); i++) {
+            CarMediaListenerService.QueueEntry e = queue.get(i);
+            String prefix = e.isCurrent ? "▶ " : ((i + 1) + ". ");
+            String sub = (e.artist != null && !e.artist.isEmpty()) ? (" — " + e.artist) : "";
+            labels[i] = prefix + e.title + sub;
+        }
+
+        CarMediaListenerService.TrackInfo ti = CarMediaListenerService.getTrackInfo(this, selectedMediaTab);
+        String header = (ti.queueTitle != null && !ti.queueTitle.isEmpty())
+                ? ("☰ " + appLabel + ": " + ti.queueTitle)
+                : ("☰ Плейлист — " + appLabel + " (" + queue.size() + ")");
+
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(header)
+                .setItems(labels, (d, which) -> {
+                    if (which >= 0 && which < queue.size()) {
+                        CarMediaListenerService.QueueEntry chosen = queue.get(which);
+                        if (chosen.canSkipTo && CarMediaListenerService.skipToQueueItem(selectedMediaTab, chosen.queueId)) {
+                            Toast.makeText(this, "▶ " + chosen.title, Toast.LENGTH_SHORT).show();
+                        } else {
+                            openSelectedMediaApp();
+                        }
+                    }
+                })
+                .setNeutralButton("Открыть " + appLabel, (d, w) -> openSelectedMediaApp())
+                .setNegativeButton("Закрыть", null)
+                .show();
     }
 
     private void styleTab(TextView tv, boolean active, String bg, String border, String fg) {
@@ -1338,11 +1450,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         activityResumed = true;
         if (obdManager != null) obdManager.onActivityResumed();
         CarMediaListenerService.setUiListener(this);
-        if (!CarMediaListenerService.isConnected()) {
-            try {
-                NotificationListenerService.requestRebind(new ComponentName(this, CarMediaListenerService.class));
-            } catch (Throwable ignored) {}
-        }
+        CarMediaListenerService.ensurePermissionAndBind(this);
 
         IntentFilter btFilter = new IntentFilter();
         btFilter.addAction("com.kte.bluetooth_playName");
@@ -1352,6 +1460,11 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         btFilter.addAction("com.kte.bluetooth_connectAddress");
         btFilter.addAction("android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED");
         btFilter.addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
+        btFilter.addAction("com.spotify.music.metadatachanged");
+        btFilter.addAction("com.spotify.music.playbackstatechanged");
+        btFilter.addAction("com.android.music.metachanged");
+        btFilter.addAction("com.android.music.playstatechanged");
+        btFilter.addAction("ru.yandex.music.metachanged");
         registerReceiver(btMusicReceiver, btFilter);
 
         registerReceiver(volumeReceiver, new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
