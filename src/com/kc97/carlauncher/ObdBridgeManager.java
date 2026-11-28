@@ -147,33 +147,35 @@ public class ObdBridgeManager {
         try { if (tcpServer != null) tcpServer.close(); } catch (Throwable ignored) {}
     }
 
-    private int sppDialAttempt = 0;
     private long startedElapsedMs = 0L;
+    private long lastGocSerialDialMs = 0L;
+    private volatile boolean forceDialNext = false;
 
     public void forceReconnect() {
         Log.i(TAG, "Manual/forced OBD reconnect requested");
-        sppDialAttempt++;
+        forceDialNext = true;
         closeActiveSpp();
     }
 
     public void onActivityResumed() {
         if (!latest.ecuReady && !externalClientActive
-                && (SystemClock.elapsedRealtime() - startedElapsedMs) > 12_000L) {
-            Log.i(TAG, "Activity resumed while OBD not ready -> triggering fresh SPP dial");
-            sppDialAttempt++;
+                && (SystemClock.elapsedRealtime() - startedElapsedMs) > 12_000L
+                && (SystemClock.elapsedRealtime() - lastGocSerialDialMs) > 45_000L) {
+            Log.i(TAG, "Activity resumed while OBD not ready -> scheduling gentle SPP wake");
+            forceDialNext = true;
             closeActiveSpp();
         }
     }
 
     /**
-     * Called on ACC wake (ACTION_SCREEN_ON): forces a clean SPP re-dial after SD-968 wakes from sleep.
+     * Called on ACC wake (ACTION_SCREEN_ON): forces one clean SPP wake dial after SD-968 wakes from sleep.
      */
     public void onAccWake() {
         if (!externalClientActive) {
-            Log.i(TAG, "ACC wake detected -> resetting stale OBD link for fresh AT#SP dial");
+            Log.i(TAG, "ACC wake detected -> scheduling single gentle AT#SP wake dial");
             latest.ecuReady = false;
             latest.connecting = true;
-            sppDialAttempt = 0; // fresh AT#SP first (no unnecessary AT#SH on clean wake)
+            forceDialNext = true;
             notifyListener();
             closeActiveSpp();
         }
@@ -200,28 +202,29 @@ public class ObdBridgeManager {
     }
 
     /**
-     * Triggers SD-968 Bluetooth daemon (sdsdk968) to open RFCOMM SPP link to ELM327 via /dev/goc_serial.
-     * Avoids spamming AT#SH on every cycle (which would tear down an in-progress 6-9s Bluetooth page!);
-     * only sends AT#SH on every 3rd consecutive failure to clear truly stuck handles.
+     * Gentle, zero-spam SD-968 SPP wake:
+     * - NEVER sends AT#SH automatically (prevents corrupting OBDII pairing or dropping phone HFP/BT music!).
+     * - Sends AT#SP<MAC> at most once per 90 seconds (or on explicit ACC wake / manual reconnect),
+     *   letting passive /dev/socket/goc_spp checks run cleanly in between.
      */
-    private void dialSppViaGocSerial() {
+    private void dialSppIfAllowed() {
+        long now = SystemClock.elapsedRealtime();
+        boolean allowed = forceDialNext || (lastGocSerialDialMs == 0L) || ((now - lastGocSerialDialMs) >= 90_000L);
+        if (!allowed) return;
+        forceDialNext = false;
+        lastGocSerialDialMs = now;
         try {
-            if (sppDialAttempt > 0 && (sppDialAttempt % 3 == 0)) {
-                sendGocSerialCmd("AT#SH");
-                Thread.sleep(700);
-            }
             if (sendGocSerialCmd("AT#SP" + obdMac)) {
-                Log.i(TAG, "Sent SPP dial to /dev/goc_serial: AT#SP" + obdMac + " (attempt=" + sppDialAttempt + ")");
+                Log.i(TAG, "Sent gentle SPP dial to /dev/goc_serial: AT#SP" + obdMac);
                 Thread.sleep(4500);
             }
-            sppDialAttempt++;
         } catch (Throwable e) {
             Log.w(TAG, "goc_serial dial skipped: " + e.getMessage());
         }
     }
 
     private LocalSocket openSppLink() throws Exception {
-        dialSppViaGocSerial();
+        dialSppIfAllowed();
         LocalSocket sock = new LocalSocket();
         sock.connect(new LocalSocketAddress("/dev/socket/goc_spp", LocalSocketAddress.Namespace.FILESYSTEM));
         sock.setSoTimeout(1500);
@@ -330,7 +333,6 @@ public class ObdBridgeManager {
                 if (!id.toUpperCase(Locale.US).contains("ELM") && !id.contains(">")) {
                     throw new Exception("No ELM327 response: " + id);
                 }
-                sppDialAttempt = 0;
 
                 sendCmd(in, out, "ATE0", 1500);
                 sendCmd(in, out, "ATL0", 1500);
@@ -479,7 +481,7 @@ public class ObdBridgeManager {
             } finally {
                 closeActiveSpp();
             }
-            sleepQuiet(5000);
+            sleepQuiet(10_000);
         }
     }
 

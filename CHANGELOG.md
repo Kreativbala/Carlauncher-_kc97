@@ -1,6 +1,14 @@
 # Changelog / История изменений
 
-## [2.3] — 2026-11-27 (Current Stable / Текущая стабильная)
+## [2.4] — 2026-11-28 (Current Stable / Текущая стабильная)
+- **EN:** Eliminated SD-968 Bluetooth pairing corruption & BT Music hiccups: removed automatic `AT#SH` teardown spam and rate-limited gentle `AT#SP` wake dials to once per 90s (or explicit ACC wake / manual reconnect), letting passive `/dev/socket/goc_spp` polling run silently.
+- **EN:** Launcher-managed DVR («Стражи безопасности») autostart & guaranteed 4s auto-minimize on every cold boot and ACC wake (`ACTION_SCREEN_ON`), with an on/off toggle in the OBD/Settings menu (replaces flaky KTE `self_start_apk_name0`).
+- **EN:** Hardened media playback & notification listener: added system `KEYCODE_MEDIA_PLAY_PAUSE` fallback when `NotificationListenerService` is temporarily rebinding, smart permission hint hiding when already granted, and `/ksys/etc/accwhitelist.conf` documentation to stop KTE's ACC-off killer from terminating the service.
+- **RU:** Устранён сбой сопряжения `OBDII` и помехи «BT Музыке»: убран автоматический спам `AT#SH`, мягкий вызов `AT#SP` ограничен 1 разом в 90 секунд (или по пробуждению `ACC` / кнопке), остальное время работает тихий `/dev/socket/goc_spp`.
+- **RU:** Автозапуск и гарантированное сворачивание регистратора «Стражи безопасности» через 4 с теперь полностью управляются самим лаунчером при каждом включении/пробуждении (с переключателем ВКЛ/ВЫКЛ в меню OBD), вместо нестабильного китайского `self_start_apk_name0`.
+- **RU:** Усилена стабильность медиа-виджета (резервное управление через системные медиа-клавиши + добавление `com.kc97.carlauncher` в системный белый список сна `/ksys/etc/accwhitelist.conf`, чтобы служба треков не убивалась при `ACC off`).
+
+## [2.3] — 2026-11-27
 - **EN:** Added persistent `ACTION_SCREEN_ON` / ACC wake receiver: automatically minimizes autostart DVR («Стражи безопасности») after **every ACC sleep/wake cycle** (not just cold boots) AND triggers a clean OBD `AT#SP` wake reconnect immediately without waiting for screen taps.
 - **RU:** Добавлен обработчик пробуждения из сна (`ACTION_SCREEN_ON` / ACC wake): теперь регистратор «Стражи безопасности» **автоматически сворачивается после каждого сна и запуска машины** (а не только после холодной перезагрузки), а OBD сразу автоматически запускает чистый переподъём `AT#SP` без касания экрана.
 

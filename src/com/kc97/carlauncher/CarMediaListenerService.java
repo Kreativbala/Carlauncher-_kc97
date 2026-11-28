@@ -97,7 +97,15 @@ public class CarMediaListenerService extends NotificationListenerService {
             }
             return;
         }
-        // Launch app if session not active yet
+        // Fallback when NotificationListener is temporarily unbound: toggle active playback via system media key!
+        try {
+            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null && am.isMusicActive()) {
+                dispatchMediaKey(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+                return;
+            }
+        } catch (Throwable ignored) {}
+        // Launch app if nothing is playing yet
         try {
             Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(targetPkg);
             if (launch != null) {

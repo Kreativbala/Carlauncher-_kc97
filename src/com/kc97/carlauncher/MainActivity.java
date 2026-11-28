@@ -55,6 +55,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     private static final String TAG_BT = "KC97_BT";
     private static final String PREFS_NAME = "kc97_cockpit";
     private static final String KEY_MEDIA_TAB = "media_tab_v11";
+    private static final String KEY_AUTO_DVR = "auto_start_dvr_v24";
     private static final String TAB_YANDEX = CarMediaListenerService.PKG_YANDEX;
     private static final String TAB_SPOTIFY = CarMediaListenerService.PKG_SPOTIFY;
     private static final String TAB_BLUETOOTH = "kte_bt_music";
@@ -91,11 +92,11 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
             String act = intent.getAction();
             if (Intent.ACTION_SCREEN_ON.equals(act) || Intent.ACTION_USER_PRESENT.equals(act)) {
                 userManuallyOpenedDvr = false;
-                scheduleWakeDvrAutoMinimize();
+                triggerManagedDvrAutostart(true);
                 if (obdManager != null) {
                     handler.postDelayed(() -> {
                         if (obdManager != null) obdManager.onAccWake();
-                    }, 3500L);
+                    }, 4000L);
                 }
             }
         }
@@ -294,13 +295,35 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
             registerReceiver(screenWakeReceiver, wakeFilter);
         } catch (Throwable ignored) {}
 
-        // Auto-return cockpit to front after DVR ("Стражи безопасности") autostart finishes launching
-        scheduleWakeDvrAutoMinimize();
+        // Managed DVR ("Стражи безопасности") autostart + guaranteed auto-minimize on boot & ACC wake!
+        triggerManagedDvrAutostart(false);
+    }
+
+    private long lastDvrAutoCycleMs = 0L;
+
+    /**
+     * Launcher-managed DVR autostart: launches com.fvision.camera to guarantee recording starts on every boot/wake,
+     * then reliably brings KC97 Cockpit back to the foreground 4s later while DVR continues recording in background.
+     */
+    private void triggerManagedDvrAutostart(boolean fromWake) {
+        if (prefs != null && !prefs.getBoolean(KEY_AUTO_DVR, true)) return;
+        long now = SystemClock.elapsedRealtime();
+        // Debounce so ACTION_SCREEN_ON + ACTION_USER_PRESENT don't fire twice in a row
+        if (lastDvrAutoCycleMs > 0L && (now - lastDvrAutoCycleMs) < 35_000L) return;
+        // On fresh app install / hot restart while car is already running long after boot, skip unless fromWake
+        if (!fromWake && now > 120_000L) return;
+        lastDvrAutoCycleMs = now;
+
+        handler.postDelayed(() -> {
+            if (userManuallyOpenedDvr) return;
+            launchPackageSilent("com.fvision.camera");
+            scheduleWakeDvrAutoMinimize();
+        }, fromWake ? 2000L : 2500L);
     }
 
     private void scheduleWakeDvrAutoMinimize() {
-        wakeAutoMinimizeUntilMs = SystemClock.elapsedRealtime() + 26_000L;
-        int[] delaysMs = {4500, 9000, 15000, 22000};
+        wakeAutoMinimizeUntilMs = SystemClock.elapsedRealtime() + 20_000L;
+        int[] delaysMs = {4000, 8000, 13000};
         for (int delay : delaysMs) {
             handler.postDelayed(() -> {
                 if (!activityResumed && !userManuallyOpenedDvr
@@ -967,7 +990,17 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         }
 
         CarMediaListenerService.TrackInfo info = CarMediaListenerService.getTrackInfo(selectedMediaTab);
-        tvPermHint.setVisibility(CarMediaListenerService.isConnected() ? View.GONE : View.VISIBLE);
+        boolean permGrantedInSettings = false;
+        try {
+            String enabled = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+            permGrantedInSettings = enabled != null && enabled.contains(getPackageName());
+        } catch (Throwable ignored) {}
+        if (!CarMediaListenerService.isConnected() && permGrantedInSettings) {
+            try {
+                NotificationListenerService.requestRebind(new ComponentName(this, CarMediaListenerService.class));
+            } catch (Throwable ignored) {}
+        }
+        tvPermHint.setVisibility((CarMediaListenerService.isConnected() || permGrantedInSettings) ? View.GONE : View.VISIBLE);
 
         if (info.hasSession && info.title != null && !info.title.isEmpty()) {
             tvTrackTitle.setText(info.title);
@@ -1361,9 +1394,11 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
     private void showFuelSettingsDialog() {
         if (obdManager == null) return;
         int logCount = tripLogger != null ? tripLogger.getLogFileCount() : 0;
+        boolean autoDvr = prefs == null || prefs.getBoolean(KEY_AUTO_DVR, true);
         final String[] items = {
                 "📤 Экспорт логов поездки (CSV, файлов: " + logCount + ")",
                 "🔌 Переподключить OBD (ELM327)",
+                "🎥 Автозапуск «Стражей» + свернуть: " + (autoDvr ? "ВКЛ" : "ВЫКЛ"),
                 "🔄 Сбросить статистику расхода (км и литры)",
                 "🔧 Открыть Car Scanner (127.0.0.1:35000)",
                 "Объём двигателя: 1.5 л",
@@ -1377,7 +1412,7 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
         };
         final float[] vols = {1.5f, 1.6f, 1.8f, 2.0f, 2.4f, 2.5f, 3.0f, 3.5f};
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle(String.format(Locale.US, "OBD и Расход (объём %.1f л)", obdManager.getEngineVolL()))
+                .setTitle(String.format(Locale.US, "OBD и Настройки (объём %.1f л)", obdManager.getEngineVolL()))
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
                         if (tripLogger != null) {
@@ -1388,12 +1423,16 @@ public class MainActivity extends Activity implements LocationListener, CarMedia
                         obdManager.forceReconnect();
                         Toast.makeText(this, "Переподключение к ELM327…", Toast.LENGTH_SHORT).show();
                     } else if (which == 2) {
+                        boolean next = !autoDvr;
+                        prefs.edit().putBoolean(KEY_AUTO_DVR, next).apply();
+                        Toast.makeText(this, next ? "Автозапуск «Стражей» ВКЛ" : "Автозапуск «Стражей» ВЫКЛ", Toast.LENGTH_SHORT).show();
+                    } else if (which == 3) {
                         obdManager.resetStatistics();
                         Toast.makeText(this, "Статистика расхода и пробега сброшена", Toast.LENGTH_SHORT).show();
-                    } else if (which == 3) {
+                    } else if (which == 4) {
                         launchPackageOrToast("com.ovz.carscanner", "Car Scanner");
                     } else {
-                        int vIdx = which - 4;
+                        int vIdx = which - 5;
                         if (vIdx >= 0 && vIdx < vols.length) {
                             obdManager.setEngineVolL(vols[vIdx]);
                             Toast.makeText(this, String.format(Locale.US, "Установлен объём %.1f л", vols[vIdx]), Toast.LENGTH_SHORT).show();

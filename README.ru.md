@@ -5,7 +5,7 @@
 **Ультралёгкий тёмный автомобильный лаунчер для Android-магнитол (KTE / KC97 / MT6797 / Android 8.0+)**  
 *Нативная карта и живые пробки без WebView • Бортовой компьютер OBD-II для синего ELM327 v1.5 (`goc_spp`) • Авто-ночной режим по фарам • 3-вкладочный медиаплеер*
 
-[![Версия](https://img.shields.io/badge/версия-2.3-00D4FF?style=for-the-badge)](CHANGELOG.md)
+[![Версия](https://img.shields.io/badge/версия-2.4-00D4FF?style=for-the-badge)](CHANGELOG.md)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20(API%2026)-34D399?style=for-the-badge)](#сборка-из-исходников-без-gradle-и-android-studio)
 [![Размер APK](https://img.shields.io/badge/размер%20APK-~86%20КБ-F59E0B?style=for-the-badge)](KC97-Cockpit-Launcher.apk)
 [![ОЗУ](https://img.shields.io/badge/ОЗУ-~30%20МБ%20(0%20WebView)-8B5CF6?style=for-the-badge)](docs/ARCHITECTURE.md)
